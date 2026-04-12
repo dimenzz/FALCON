@@ -1,0 +1,69 @@
+data:
+  proteins_db: /mnt/nfs/share/MGnify/all_data/proteins.db
+  clusters_db: /mnt/nfs/share/MGnify/all_data/clusters.db
+  genome_manifest: data/data_manifests/genome_manifest.csv
+  protein_manifest: data/data_manifests/protein_manifest.csv
+  mmseqs_db_root: /mnt/nfs/share/MGnify/all_data/mmseqs_db
+
+tools:
+  mmseqs: /mnt/data1/zhuwei/software/mmseqs/bin/mmseqs
+  interproscan: /mnt/data1/zhuwei/software/interproscan/interproscan-5.77-108.0/interproscan.sh
+  interproscan_threads: 20
+
+context:
+  window_mode: genes
+  upstream: 5
+  downstream: 5
+  bp_upstream: 5000
+  bp_downstream: 5000
+  include_clusters: true
+
+homology:
+  search_level: 90
+  sensitivity: 7.5
+  evalue: 1.0e-3
+  max_seqs: 5000
+  threads: 20
+  format_fields:
+    - query
+    - target
+    - pident
+    - alnlen
+    - qcov
+    - tcov
+    - evalue
+    - bits
+    - qlen
+    - tlen
+
+clusters:
+  search_level: 90
+  statistics_neighbor_level: 30
+  expand_30_contexts: false
+
+colocation:
+  min_contexts: 3
+  min_presence_rate: 0.1
+  min_fold_enrichment: 2.0
+  max_qvalue: 0.05
+  max_examples: 5
+  no_filtering: false
+
+background:
+  output_dir: runs/background
+
+sequence:
+  max_bases: 20000
+
+agent:
+  max_candidates: 50
+  max_examples: 5
+  include_sequences: false
+  flank_bp: 0
+
+runtime:
+  sandbox_dir: sandbox
+  cache_dir: cache
+  log_dir: logs
+  tool_log_mode: quiet
+  runs_dir: runs

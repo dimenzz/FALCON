@@ -1,0 +1,1 @@
+"""Reserved candidate selection layer."""
