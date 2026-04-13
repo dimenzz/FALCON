@@ -22,6 +22,7 @@ def score_colocation(
     max_qvalue: float,
     max_examples: int,
     no_filtering: bool,
+    max_candidates: int | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,7 +106,14 @@ def score_colocation(
 
     _add_bh_q_values(stats)
     stats.sort(key=lambda row: (row["q_value"], -row["fold_enrichment"], row["query_id"], row["cluster_30"]))
-    candidates = [
+    filter_diagnostics = _filter_diagnostics(
+        stats,
+        min_contexts=min_contexts,
+        min_presence_rate=min_presence_rate,
+        min_fold_enrichment=min_fold_enrichment,
+        max_qvalue=max_qvalue,
+    )
+    candidates_before_limit = [
         row
         for row in stats
         if no_filtering
@@ -116,6 +124,8 @@ def score_colocation(
             and row["q_value"] <= max_qvalue
         )
     ]
+    candidates_before_limit.sort(key=_candidate_sort_key)
+    candidates = _limit_candidates(candidates_before_limit, max_candidates)
 
     stats_path = output_dir / "colocation_stats.jsonl"
     candidates_path = output_dir / "candidate_neighbors.jsonl"
@@ -127,9 +137,12 @@ def score_colocation(
         "query_count": len(query_contexts),
         "stat_rows": len(stats),
         "candidates": len(candidates),
+        "candidates_before_limit": len(candidates_before_limit),
         "colocation_stats": str(stats_path),
         "candidate_neighbors": str(candidates_path),
         "candidate_neighbors_tsv": str(candidates_tsv_path),
+        "filter_diagnostics": filter_diagnostics,
+        "max_candidates": max_candidates,
         "no_filtering": no_filtering,
     }
     (output_dir / "colocation_summary.json").write_text(
@@ -179,16 +192,81 @@ def _add_bh_q_values(rows: list[dict[str, Any]]) -> None:
         rows[original_index]["q_value"] = min(q_value, 1.0)
 
 
+def _filter_diagnostics(
+    rows: list[dict[str, Any]],
+    *,
+    min_contexts: int,
+    min_presence_rate: float,
+    min_fold_enrichment: float,
+    max_qvalue: float,
+) -> dict[str, Any]:
+    return {
+        "total": len(rows),
+        "presence_contexts": sum(1 for row in rows if row["presence_contexts"] >= min_contexts),
+        "presence_rate": sum(1 for row in rows if row["presence_rate"] >= min_presence_rate),
+        "fold_enrichment": sum(1 for row in rows if row["fold_enrichment"] >= min_fold_enrichment),
+        "q_value": sum(1 for row in rows if row["q_value"] <= max_qvalue),
+        "combined_before_limit": sum(
+            1
+            for row in rows
+            if row["presence_contexts"] >= min_contexts
+            and row["presence_rate"] >= min_presence_rate
+            and row["fold_enrichment"] >= min_fold_enrichment
+            and row["q_value"] <= max_qvalue
+        ),
+        "thresholds": {
+            "min_contexts": min_contexts,
+            "min_presence_rate": min_presence_rate,
+            "min_fold_enrichment": min_fold_enrichment,
+            "max_qvalue": max_qvalue,
+        },
+    }
+
+
+def _candidate_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        -row["presence_contexts"],
+        row["q_value"],
+        -row["fold_enrichment"],
+        row["query_id"],
+        row["cluster_30"],
+    )
+
+
+def _limit_candidates(
+    candidates: list[dict[str, Any]],
+    max_candidates: int | None,
+) -> list[dict[str, Any]]:
+    if max_candidates is None or int(max_candidates) <= 0:
+        return candidates
+    return candidates[: int(max_candidates)]
+
+
 def _write_candidates_tsv(candidates: list[dict[str, Any]], path: Path | str) -> None:
     with Path(path).open("w", encoding="utf-8") as handle:
         handle.write(
             "query_id\tcluster_30\tpresence_contexts\tquery_contexts\tcopy_count\t"
-            "presence_rate\tbackground_probability\tfold_enrichment\tp_value\tq_value\n"
+            "presence_rate\tbackground_probability\tfold_enrichment\tp_value\tq_value\t"
+            "example_neighbor_ids\texample_products\n"
         )
         for row in candidates:
+            example_neighbor_ids, example_products = _example_summaries(row)
             handle.write(
                 f"{row['query_id']}\t{row['cluster_30']}\t{row['presence_contexts']}\t"
                 f"{row['query_contexts']}\t{row['copy_count']}\t{row['presence_rate']}\t"
                 f"{row['background_probability']}\t{row['fold_enrichment']}\t"
-                f"{row['p_value']}\t{row['q_value']}\n"
+                f"{row['p_value']}\t{row['q_value']}\t"
+                f"{example_neighbor_ids}\t{example_products}\n"
             )
+
+
+def _example_summaries(row: dict[str, Any]) -> tuple[str, str]:
+    ids = []
+    products = []
+    for example in row.get("examples", []):
+        protein = example.get("neighbor_protein", {})
+        if protein.get("protein_id"):
+            ids.append(str(protein["protein_id"]))
+        if protein.get("product"):
+            products.append(str(protein["product"]).replace("\t", " "))
+    return ";".join(ids), ";".join(products)

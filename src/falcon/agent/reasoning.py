@@ -5,6 +5,9 @@ from typing import Any, Iterable
 import json
 import re
 
+from falcon.agent.loop import run_llm_loop
+from falcon.agent.prompts import PromptPack, load_prompt_pack
+from falcon.agent.providers import LLMProvider, OpenAIChatProvider, ReplayLLMProvider, ScriptedLLMProvider
 from falcon.context.extractor import extract_context
 from falcon.data.clusters import ClusterRepository
 from falcon.data.proteins import ProteinNotFoundError, ProteinRepository
@@ -26,6 +29,16 @@ def reason_candidates(
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
+    llm_mode: str = "deterministic",
+    prompt_pack: Path | str | None = None,
+    max_iterations: int = 6,
+    llm_model_name: str | None = None,
+    llm_base_url: str | None = None,
+    llm_api_key_env: str = "OPENAI_API_KEY",
+    llm_temperature: float = 0.2,
+    llm_max_tokens: int = 2000,
+    replay_path: Path | str | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(out_dir)
     reports_dir = output_dir / "reports"
@@ -35,6 +48,25 @@ def reason_candidates(
     candidates = _read_jsonl(candidates_path)
     if max_candidates is not None:
         candidates = candidates[: int(max_candidates)]
+
+    normalized_llm_mode = str(llm_mode)
+    prompt_pack_obj: PromptPack | None = None
+    provider: LLMProvider | None = None
+    trace_records: list[dict[str, Any]] = []
+    call_records: list[dict[str, Any]] = []
+    if normalized_llm_mode != "deterministic":
+        if prompt_pack is None:
+            raise ValueError("agent.llm.prompt_pack must be set when LLM mode is enabled")
+        prompt_pack_obj = load_prompt_pack(prompt_pack)
+        provider = llm_provider or _build_llm_provider(
+            mode=normalized_llm_mode,
+            model_name=llm_model_name,
+            base_url=llm_base_url,
+            api_key_env=llm_api_key_env,
+            temperature=llm_temperature,
+            max_tokens=llm_max_tokens,
+            replay_path=replay_path,
+        )
 
     results = []
     with ProteinRepository(proteins_db) as proteins, ClusterRepository(clusters_db) as clusters, SequenceRepository(
@@ -56,18 +88,33 @@ def reason_candidates(
                 include_sequences=include_sequences,
                 flank_bp=flank_bp,
                 sequence_max_bases=sequence_max_bases,
+                llm_mode=normalized_llm_mode,
+                prompt_pack=prompt_pack_obj,
+                llm_provider=provider,
+                max_iterations=max_iterations,
             )
+            trace_records.extend(result.pop("_agent_trace_records", []))
+            call_records.extend(result.pop("_llm_call_records", []))
             results.append(result)
 
     results_path = output_dir / "agent_results.jsonl"
     write_jsonl(results, results_path)
+    trace_path = output_dir / "agent_trace.jsonl"
+    calls_path = output_dir / "llm_calls.jsonl"
+    if normalized_llm_mode != "deterministic":
+        write_jsonl(trace_records, trace_path)
+        write_jsonl(call_records, calls_path)
     summary = {
         "candidates_input": str(candidates_path),
         "candidates_processed": len(results),
         "agent_results": str(results_path),
         "reports_dir": str(reports_dir),
         "status_counts": _status_counts(results),
+        "llm_mode": normalized_llm_mode,
     }
+    if normalized_llm_mode != "deterministic":
+        summary["agent_trace"] = str(trace_path)
+        summary["llm_calls"] = str(calls_path)
     (output_dir / "agent_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -89,6 +136,10 @@ def _reason_candidate(
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
+    llm_mode: str,
+    prompt_pack: PromptPack | None,
+    llm_provider: LLMProvider | None,
+    max_iterations: int,
 ) -> dict[str, Any]:
     examples = []
     uncertainties = []
@@ -123,6 +174,23 @@ def _reason_candidate(
         "reasoning": reasoning,
         "uncertainties": uncertainties,
     }
+    if llm_mode != "deterministic":
+        if prompt_pack is None or llm_provider is None:
+            raise ValueError("LLM prompt pack and provider are required when LLM mode is enabled")
+        loop_result = run_llm_loop(
+            candidate_index=candidate_index,
+            candidate_slug=_candidate_slug(candidate),
+            evidence=result,
+            provider=llm_provider,
+            prompt_pack=prompt_pack,
+            max_iterations=max_iterations,
+            mode=llm_mode,
+        )
+        result["reasoning"] = loop_result.reasoning
+        result["llm_trace"] = loop_result.trace_summary
+        result["uncertainties"].extend(loop_result.uncertainties)
+        result["_agent_trace_records"] = loop_result.trace_records
+        result["_llm_call_records"] = loop_result.call_records
     report_path = reports_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.md"
     result["report_path"] = str(report_path)
     report_path.write_text(render_agent_report(result), encoding="utf-8")
@@ -303,3 +371,30 @@ def _status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
 def _candidate_slug(candidate: dict[str, Any]) -> str:
     raw = f"{candidate.get('query_id', 'query')}-{candidate.get('cluster_30', 'cluster')}"
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-") or "candidate"
+
+
+def _build_llm_provider(
+    *,
+    mode: str,
+    model_name: str | None,
+    base_url: str | None,
+    api_key_env: str,
+    temperature: float,
+    max_tokens: int,
+    replay_path: Path | str | None,
+) -> LLMProvider:
+    if mode == "mock":
+        return ScriptedLLMProvider()
+    if mode == "replay":
+        if replay_path is None:
+            raise ValueError("agent.llm.replay_path must be set for replay LLM mode")
+        return ReplayLLMProvider(replay_path)
+    if mode == "live":
+        return OpenAIChatProvider(
+            model_name=model_name,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            temperature=float(temperature),
+            max_tokens=int(max_tokens),
+        )
+    raise ValueError(f"Unsupported agent.llm.mode: {mode}")

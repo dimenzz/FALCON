@@ -8,7 +8,7 @@ FALCON is a falsification-first agentic system for metagenomic discovery. It is 
 4. run evidence-driven reasoning on individual candidate neighbor proteins,
 5. report hypotheses, falsification attempts, contradictions, and uncertainty.
 
-The current implementation is intentionally smaller than the full vision. It provides CLI-driven homology search, context cohort construction, co-localization scoring, sequence lookup, and a deterministic Agent MVP that produces auditable evidence packets and reports. It does not yet run LLM reasoning, InterProScan execution, dynamic tool generation, or full evidence graph assembly.
+The current implementation is intentionally smaller than the full vision. It provides CLI-driven homology search, context cohort construction, co-localization scoring, sequence lookup, and an Agent MVP that can run either deterministic rule-based reasoning or a replayable LLM loop over read-only evidence. It does not yet run InterProScan execution, dynamic tool generation, literature search, or full evidence graph assembly.
 
 ## Install
 
@@ -123,6 +123,8 @@ uv run falcon colocation score \
 
 The colocation scorer works per query, excludes the target's own 30% cluster, uses per-context presence as the main count, emits copy counts as supporting evidence, and writes ranked candidate neighbor clusters with example proteins.
 
+`candidate_neighbors.jsonl` and `candidate_neighbors.tsv` are exploration-first queues. The default thresholds require at least 3 supporting contexts, presence rate >= 0.01, fold enrichment >= 2, and q-value <= 0.05, then keep the top 100 candidates by presence contexts. Use `--max-candidates 0` to disable candidate truncation.
+
 Read a protein sequence through the manifest-backed sequence layer:
 
 ```bash
@@ -151,6 +153,44 @@ uv run falcon agent reason \
 
 The Agent MVP reads occurrence examples, hydrates them with SQLite annotations and cluster mappings, checks sequence availability, writes `agent_results.jsonl`, and renders per-candidate Markdown reports. It records uncertainty instead of inventing conclusions when evidence is missing.
 
+Run the LLM-backed falsification loop with a mock provider:
+
+```bash
+uv run falcon agent reason \
+  --candidates runs/example-search/candidate_neighbors.jsonl \
+  --config configs/default.yaml \
+  --llm-mode mock \
+  --out-dir runs/example-agent-llm-mock
+```
+
+Run the live OpenAI-compatible Chat Completions provider:
+
+```bash
+export OPENAI_API_KEY=...
+
+uv run falcon agent reason \
+  --candidates runs/example-search/candidate_neighbors.jsonl \
+  --config configs/default.yaml \
+  --llm-mode live \
+  --model-name your-model-name \
+  --base-url https://api.openai.com/v1 \
+  --max-iterations 6 \
+  --out-dir runs/example-agent-live
+```
+
+Live mode requires an explicit model name from YAML or `--model-name`; FALCON does not guess a default model. Custom OpenAI-compatible endpoints are supported through `agent.llm.base_url` or `--base-url`. API key lookup uses `agent.llm.api_key_env`, defaulting to `OPENAI_API_KEY`.
+
+LLM prompts are centralized under `prompts/agent/`. The default prompt pack is `prompts/agent/falsification_loop.yaml` and defines the allowed JSON actions:
+
+- `propose_hypothesis`
+- `request_context_summary`
+- `request_sequence_summary`
+- `compare_example_annotations`
+- `record_contradiction`
+- `finalize`
+
+The MVP LLM loop only exposes read-only evidence already collected by FALCON: candidate statistics, occurrence-level genomic context, sequence availability, and SQLite annotations. It writes `agent_trace.jsonl` and `llm_calls.jsonl` for replay and audit.
+
 External tool logs are quiet by default. MMseqs stdout and stderr are captured under `runtime.log_dir`, and successful homology summaries include a `tool_trace` with log paths. If MMseqs fails, the CLI reports the exit code and the captured log paths.
 
 ## Current Scope
@@ -172,11 +212,13 @@ Implemented in the MVP:
 - Manifest-backed protein and DNA sequence lookup.
 - Quiet external tool execution with stdout/stderr log artifacts.
 - Deterministic Agent MVP evidence packets and Markdown reports.
+- LLM-backed, replayable Agent loop over read-only evidence using OpenAI-compatible Chat Completions.
+- Centralized YAML prompt packs under `prompts/agent/`.
 - Fixture-based tests that do not require the large NFS databases.
 
 Not implemented yet:
 
-- LLM-backed agent reasoning.
 - Automatic InterProScan execution.
+- Literature-backed retrieval or web search inside the agent loop.
 - Dynamic tool generation.
 - Full evidence graph and final discovery reports.

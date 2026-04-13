@@ -54,10 +54,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "colocation": {
         "min_contexts": 3,
-        "min_presence_rate": 0.1,
+        "min_presence_rate": 0.01,
         "min_fold_enrichment": 2.0,
         "max_qvalue": 0.05,
         "max_examples": 5,
+        "max_candidates": 100,
         "no_filtering": False,
     },
     "background": {
@@ -71,6 +72,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_examples": 5,
         "include_sequences": False,
         "flank_bp": 0,
+        "llm": {
+            "mode": "deterministic",
+            "provider": "openai",
+            "model_name": None,
+            "base_url": None,
+            "api_key_env": "OPENAI_API_KEY",
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "prompt_pack": "prompts/agent/falsification_loop.yaml",
+            "max_iterations": 6,
+            "replay_path": None,
+        },
     },
     "runtime": {
         "sandbox_dir": "sandbox",

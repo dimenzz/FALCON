@@ -32,14 +32,16 @@ Compute cluster-level co-localization effects:
 
 ## Phase 4: Falsification-First Agent Reasoning
 
-Run deterministic evidence construction on individual strong-effect neighbor proteins:
+Run evidence construction and falsification-first reasoning on individual strong-effect neighbor proteins:
 
 - Add quiet external tool execution and trace logging.
 - Add manifest-backed protein and DNA sequence lookup tools.
 - Build candidate evidence packets from occurrence examples.
 - Generate falsification checklists and rule-based status labels.
+- Add a replayable LLM loop with centralized YAML prompt packs.
+- Keep initial LLM actions limited to read-only evidence observations.
 - Produce JSONL traces and Markdown evidence reports.
-- Defer LLM reasoning and automatic InterProScan execution to a later phase.
+- Defer automatic InterProScan execution to a later phase.
 
 ## Phase 5: Reporting and Evidence System
 
@@ -49,5 +51,5 @@ Build fuller reasoning and reporting outputs:
 - Contradiction ledger.
 - Tool execution trace.
 - Optional deterministic annotation tool execution.
-- LLM-backed falsification reasoning with explicit prompts and outputs.
+- Stronger literature/domain evidence integration around the existing LLM loop.
 - Final report with accepted and rejected hypotheses.

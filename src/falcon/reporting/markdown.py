@@ -24,9 +24,32 @@ def render_agent_report(result: dict[str, Any]) -> str:
         f"- Protein sequence available: {sequence['protein']['available']}",
         f"- DNA sequence available: {sequence['dna']['available']}",
         "",
-        "## Falsification Checklist",
-        "",
     ]
+    if reasoning.get("evidence"):
+        lines.extend(["## Reasoning Evidence", ""])
+        for evidence in reasoning["evidence"]:
+            lines.append(f"- {evidence}")
+        lines.append("")
+
+    if "llm_trace" in result:
+        trace = result["llm_trace"]
+        lines.extend(
+            [
+                "## LLM Agent Loop",
+                "",
+                f"- Mode: {trace['mode']}",
+                f"- Provider: {trace['provider']}",
+                f"- Iterations: {trace['iterations']}",
+                f"- Finalized: {trace['finalized']}",
+            ]
+        )
+        for hypothesis in trace.get("hypotheses", []):
+            lines.append(f"- Hypothesis: {hypothesis}")
+        for contradiction in trace.get("contradictions", []):
+            lines.append(f"- Contradiction: {contradiction}")
+        lines.append("")
+
+    lines.extend(["## Falsification Checklist", ""])
     for item in result["falsification_checklist"]:
         lines.append(f"- [{item['status']}] {item['question']} - {item['evidence']}")
 

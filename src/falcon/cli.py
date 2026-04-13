@@ -53,6 +53,13 @@ class OutputFormat(str, Enum):
     YAML = "yaml"
 
 
+class LLMMode(str, Enum):
+    DETERMINISTIC = "deterministic"
+    MOCK = "mock"
+    LIVE = "live"
+    REPLAY = "replay"
+
+
 def _path_value(value: Path | None) -> str | None:
     return str(value) if value is not None else None
 
@@ -97,12 +104,22 @@ def _build_overrides(
     min_fold_enrichment: float | None = None,
     max_qvalue: float | None = None,
     max_examples: int | None = None,
+    colocation_max_candidates: int | None = None,
     no_filtering: bool | None = None,
     sequence_max_bases: int | None = None,
     max_candidates: int | None = None,
     agent_max_examples: int | None = None,
     include_sequences: bool | None = None,
     flank_bp: int | None = None,
+    llm_mode: LLMMode | None = None,
+    llm_model_name: str | None = None,
+    llm_base_url: str | None = None,
+    llm_api_key_env: str | None = None,
+    llm_temperature: float | None = None,
+    llm_max_tokens: int | None = None,
+    prompt_pack: Path | None = None,
+    max_iterations: int | None = None,
+    replay_path: Path | None = None,
 ) -> dict[str, Any]:
     return _compact_mapping(
         {
@@ -144,6 +161,7 @@ def _build_overrides(
                 "min_fold_enrichment": min_fold_enrichment,
                 "max_qvalue": max_qvalue,
                 "max_examples": max_examples,
+                "max_candidates": colocation_max_candidates,
                 "no_filtering": no_filtering,
             },
             "sequence": {
@@ -154,6 +172,17 @@ def _build_overrides(
                 "max_examples": agent_max_examples,
                 "include_sequences": include_sequences,
                 "flank_bp": flank_bp,
+                "llm": {
+                    "mode": llm_mode.value if llm_mode is not None else None,
+                    "model_name": llm_model_name,
+                    "base_url": llm_base_url,
+                    "api_key_env": llm_api_key_env,
+                    "temperature": llm_temperature,
+                    "max_tokens": llm_max_tokens,
+                    "prompt_pack": _path_value(prompt_pack),
+                    "max_iterations": max_iterations,
+                    "replay_path": _path_value(replay_path),
+                },
             },
         }
     )
@@ -194,12 +223,22 @@ def show_config(
     min_fold_enrichment: Annotated[float | None, typer.Option("--min-fold-enrichment")] = None,
     max_qvalue: Annotated[float | None, typer.Option("--max-qvalue")] = None,
     max_examples: Annotated[int | None, typer.Option("--max-examples")] = None,
+    colocation_max_candidates: Annotated[int | None, typer.Option("--colocation-max-candidates")] = None,
     no_filtering: Annotated[bool | None, typer.Option("--no-filtering/--filtering")] = None,
     sequence_max_bases: Annotated[int | None, typer.Option("--sequence-max-bases")] = None,
     max_candidates: Annotated[int | None, typer.Option("--max-candidates")] = None,
     agent_max_examples: Annotated[int | None, typer.Option("--agent-max-examples")] = None,
     include_sequences: Annotated[bool | None, typer.Option("--include-sequences/--no-include-sequences")] = None,
     flank_bp: Annotated[int | None, typer.Option("--flank-bp")] = None,
+    llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
+    llm_model_name: Annotated[str | None, typer.Option("--model-name")] = None,
+    llm_base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    llm_api_key_env: Annotated[str | None, typer.Option("--api-key-env")] = None,
+    llm_temperature: Annotated[float | None, typer.Option("--temperature")] = None,
+    llm_max_tokens: Annotated[int | None, typer.Option("--max-tokens")] = None,
+    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
+    max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
+    replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
     config = load_config(
@@ -230,12 +269,22 @@ def show_config(
             min_fold_enrichment=min_fold_enrichment,
             max_qvalue=max_qvalue,
             max_examples=max_examples,
+            colocation_max_candidates=colocation_max_candidates,
             no_filtering=no_filtering,
             sequence_max_bases=sequence_max_bases,
             max_candidates=max_candidates,
             agent_max_examples=agent_max_examples,
             include_sequences=include_sequences,
             flank_bp=flank_bp,
+            llm_mode=llm_mode,
+            llm_model_name=llm_model_name,
+            llm_base_url=llm_base_url,
+            llm_api_key_env=llm_api_key_env,
+            llm_temperature=llm_temperature,
+            llm_max_tokens=llm_max_tokens,
+            prompt_pack=prompt_pack,
+            max_iterations=max_iterations,
+            replay_path=replay_path,
         ),
     )
     _emit(config, output)
@@ -495,6 +544,7 @@ def colocation_score(
     min_fold_enrichment: Annotated[float | None, typer.Option("--min-fold-enrichment")] = None,
     max_qvalue: Annotated[float | None, typer.Option("--max-qvalue")] = None,
     max_examples: Annotated[int | None, typer.Option("--max-examples")] = None,
+    max_candidates: Annotated[int | None, typer.Option("--max-candidates")] = None,
     no_filtering: Annotated[bool | None, typer.Option("--no-filtering/--filtering")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
@@ -506,6 +556,7 @@ def colocation_score(
             min_fold_enrichment=min_fold_enrichment,
             max_qvalue=max_qvalue,
             max_examples=max_examples,
+            colocation_max_candidates=max_candidates,
             no_filtering=no_filtering,
         ),
     )
@@ -520,6 +571,7 @@ def colocation_score(
             min_fold_enrichment=float(config["colocation"]["min_fold_enrichment"]),
             max_qvalue=float(config["colocation"]["max_qvalue"]),
             max_examples=int(config["colocation"]["max_examples"]),
+            max_candidates=int(config["colocation"]["max_candidates"]),
             no_filtering=bool(config["colocation"]["no_filtering"]),
         )
     except (OSError, ValueError) as exc:
@@ -552,7 +604,7 @@ def sequence_protein(
             genome_manifest=config["data"]["genome_manifest"],
         ) as sequences:
             result = sequences.get_protein_sequence(protein_id)
-    except (OSError, KeyError, ValueError, sqlite3.Error) as exc:
+    except (OSError, KeyError, ValueError, RuntimeError, sqlite3.Error) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     _emit(result, output)
@@ -589,7 +641,7 @@ def sequence_dna(
                 flank_bp=flank_bp,
                 max_bases=int(config["sequence"]["max_bases"]),
             )
-    except (OSError, KeyError, ValueError, sqlite3.Error) as exc:
+    except (OSError, KeyError, ValueError, RuntimeError, sqlite3.Error) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     _emit(result, output)
@@ -609,6 +661,15 @@ def agent_reason(
     include_sequences: Annotated[bool | None, typer.Option("--include-sequences/--no-include-sequences")] = None,
     flank_bp: Annotated[int | None, typer.Option("--flank-bp")] = None,
     sequence_max_bases: Annotated[int | None, typer.Option("--sequence-max-bases")] = None,
+    llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
+    llm_model_name: Annotated[str | None, typer.Option("--model-name")] = None,
+    llm_base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    llm_api_key_env: Annotated[str | None, typer.Option("--api-key-env")] = None,
+    llm_temperature: Annotated[float | None, typer.Option("--temperature")] = None,
+    llm_max_tokens: Annotated[int | None, typer.Option("--max-tokens")] = None,
+    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
+    max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
+    replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
     config = load_config(
@@ -623,6 +684,15 @@ def agent_reason(
             include_sequences=include_sequences,
             flank_bp=flank_bp,
             sequence_max_bases=sequence_max_bases,
+            llm_mode=llm_mode,
+            llm_model_name=llm_model_name,
+            llm_base_url=llm_base_url,
+            llm_api_key_env=llm_api_key_env,
+            llm_temperature=llm_temperature,
+            llm_max_tokens=llm_max_tokens,
+            prompt_pack=prompt_pack,
+            max_iterations=max_iterations,
+            replay_path=replay_path,
         ),
     )
     output_dir = out_dir or _default_run_dir(config, "agent")
@@ -639,8 +709,17 @@ def agent_reason(
             include_sequences=bool(config["agent"]["include_sequences"]),
             flank_bp=int(config["agent"]["flank_bp"]),
             sequence_max_bases=int(config["sequence"]["max_bases"]),
+            llm_mode=str(config["agent"]["llm"]["mode"]),
+            prompt_pack=config["agent"]["llm"]["prompt_pack"],
+            max_iterations=int(config["agent"]["llm"]["max_iterations"]),
+            llm_model_name=config["agent"]["llm"].get("model_name"),
+            llm_base_url=config["agent"]["llm"].get("base_url"),
+            llm_api_key_env=str(config["agent"]["llm"]["api_key_env"]),
+            llm_temperature=float(config["agent"]["llm"]["temperature"]),
+            llm_max_tokens=int(config["agent"]["llm"]["max_tokens"]),
+            replay_path=config["agent"]["llm"].get("replay_path"),
         )
-    except (OSError, KeyError, ValueError, sqlite3.Error) as exc:
+    except (OSError, KeyError, ValueError, RuntimeError, sqlite3.Error) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     _emit(summary, output)

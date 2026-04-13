@@ -79,9 +79,11 @@ The Phase 2 cohort builder does not expand from 90% representatives to raw redun
 `falcon colocation score` writes:
 
 - `colocation_stats.jsonl`: per-query neighbor 30% cluster statistics.
-- `candidate_neighbors.jsonl`: filtered ranked candidates with examples.
-- `candidate_neighbors.tsv`: tabular candidate summary.
-- `colocation_summary.json`: counts and output paths.
+- `candidate_neighbors.jsonl`: exploration-first filtered candidates with examples.
+- `candidate_neighbors.tsv`: tabular candidate summary with example IDs and products.
+- `colocation_summary.json`: counts, filter diagnostics, thresholds, and output paths.
+
+By default, candidate output is an exploration queue rather than a strict high-prevalence list. The scorer applies `min_contexts`, `min_presence_rate`, `min_fold_enrichment`, and `max_qvalue`, sorts retained candidates by `presence_contexts` first, and then applies `max_candidates` if it is greater than zero.
 
 `falcon sequence protein` returns manifest-backed protein FASTA records by occurrence `protein_id`.
 

@@ -307,6 +307,8 @@ agent:
   max_examples: 5
   include_sequences: false
   flank_bp: 1
+  llm:
+    mode: deterministic
 """,
         encoding="utf-8",
     )
@@ -350,6 +352,24 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
             "12",
             "--sequence-max-bases",
             "500",
+            "--colocation-max-candidates",
+            "25",
+            "--llm-mode",
+            "live",
+            "--model-name",
+            "falcon-test-model",
+            "--base-url",
+            "https://llm.example/v1",
+            "--api-key-env",
+            "FALCON_TEST_KEY",
+            "--temperature",
+            "0.1",
+            "--max-tokens",
+            "1234",
+            "--prompt-pack",
+            str(tmp_path / "prompt.yaml"),
+            "--max-iterations",
+            "8",
         ],
     )
 
@@ -364,6 +384,15 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
     assert payload["agent"]["include_sequences"] is True
     assert payload["agent"]["flank_bp"] == 12
     assert payload["sequence"]["max_bases"] == 500
+    assert payload["colocation"]["max_candidates"] == 25
+    assert payload["agent"]["llm"]["mode"] == "live"
+    assert payload["agent"]["llm"]["model_name"] == "falcon-test-model"
+    assert payload["agent"]["llm"]["base_url"] == "https://llm.example/v1"
+    assert payload["agent"]["llm"]["api_key_env"] == "FALCON_TEST_KEY"
+    assert payload["agent"]["llm"]["temperature"] == 0.1
+    assert payload["agent"]["llm"]["max_tokens"] == 1234
+    assert payload["agent"]["llm"]["prompt_pack"] == str(tmp_path / "prompt.yaml")
+    assert payload["agent"]["llm"]["max_iterations"] == 8
 
 
 def test_inspect_reports_sqlite_and_manifest_status(tmp_path: Path) -> None:
@@ -549,12 +578,16 @@ def test_colocation_score_command_writes_candidate_artifacts(tmp_path: Path) -> 
             str(background_path),
             "--out-dir",
             str(out_dir),
+            "--max-candidates",
+            "1",
         ],
     )
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["candidates"] == 1
+    assert payload["max_candidates"] == 1
+    assert payload["filter_diagnostics"]["combined_before_limit"] == 1
     assert (out_dir / "candidate_neighbors.jsonl").exists()
     assert (out_dir / "candidate_neighbors.tsv").exists()
 
@@ -639,3 +672,112 @@ def test_agent_reason_command_writes_results_and_reports(tmp_path: Path) -> None
     ]
     assert results[0]["reasoning"]["status"] == "supported"
     assert Path(results[0]["report_path"]).exists()
+
+
+def test_agent_reason_live_mode_requires_explicit_model_name(tmp_path: Path) -> None:
+    config_path = create_sequence_agent_config(tmp_path)
+    candidates_path = tmp_path / "candidate_neighbors.jsonl"
+    out_dir = tmp_path / "agent"
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "query_id": "q1",
+                "cluster_30": "neighbor30",
+                "presence_contexts": 3,
+                "query_contexts": 4,
+                "presence_rate": 0.75,
+                "fold_enrichment": 10.0,
+                "q_value": 0.02,
+                "examples": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "reason",
+            "--candidates",
+            str(candidates_path),
+            "--config",
+            str(config_path),
+            "--out-dir",
+            str(out_dir),
+            "--llm-mode",
+            "live",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "agent.llm.model_name" in result.stderr
+
+
+def test_agent_reason_command_runs_mock_llm_loop(tmp_path: Path) -> None:
+    config_path = create_sequence_agent_config(tmp_path)
+    prompt_pack = tmp_path / "prompt.yaml"
+    candidates_path = tmp_path / "candidate_neighbors.jsonl"
+    out_dir = tmp_path / "agent"
+    prompt_pack.write_text(
+        "name: falsification-loop\n"
+        "version: 1\n"
+        "system: You are a falsification-first agent.\n"
+        "developer_guidance: Test before concluding.\n"
+        "action_schema:\n"
+        "  allowed_actions:\n"
+        "    - request_context_summary\n"
+        "    - compare_example_annotations\n"
+        "    - finalize\n"
+        "tool_policy: Read-only evidence actions only.\n"
+        "output_contract: Return one JSON action object.\n",
+        encoding="utf-8",
+    )
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "query_id": "q1",
+                "cluster_30": "neighbor30",
+                "presence_contexts": 3,
+                "query_contexts": 4,
+                "presence_rate": 0.75,
+                "fold_enrichment": 10.0,
+                "q_value": 0.02,
+                "examples": [
+                    {
+                        "context_protein_id": "target1",
+                        "neighbor_protein": {"protein_id": "neighbor1", "product": "hypothetical protein"},
+                        "relative_index": 1,
+                        "supporting_hits": [{"query_id": "q1", "target_id": "target1"}],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "reason",
+            "--candidates",
+            str(candidates_path),
+            "--config",
+            str(config_path),
+            "--out-dir",
+            str(out_dir),
+            "--llm-mode",
+            "mock",
+            "--prompt-pack",
+            str(prompt_pack),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["llm_mode"] == "mock"
+    assert Path(payload["agent_trace"]).exists()
+    assert Path(payload["llm_calls"]).exists()

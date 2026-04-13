@@ -14,6 +14,8 @@ Phase 3 adds deterministic co-localization statistics and ranked candidate neigh
 
 The scorer reports presence rate, background probability, fold enrichment, Fisher exact p-value, BH-FDR q-value, and up to five example neighbor proteins per candidate by default.
 
+Default candidate output is exploration-first: it keeps candidates with enough contexts, presence rate >= 0.01, fold enrichment >= 2, and q-value <= 0.05, then sorts by presence contexts before applying a top-N candidate limit.
+
 ## Outputs
 
-The scorer writes `colocation_stats.jsonl`, `candidate_neighbors.jsonl`, `candidate_neighbors.tsv`, and `colocation_summary.json`.
+The scorer writes `colocation_stats.jsonl`, `candidate_neighbors.jsonl`, `candidate_neighbors.tsv`, and `colocation_summary.json`. The summary includes filter diagnostics so users can see which threshold removed candidates.

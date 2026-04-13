@@ -40,3 +40,18 @@ def test_cli_overrides_yaml(tmp_path: Path) -> None:
 
     assert config["context"]["upstream"] == 7
     assert config["data"]["proteins_db"] == "/tmp/cli.sqlite"
+
+
+def test_default_colocation_filtering_is_exploratory() -> None:
+    config = load_config()
+
+    assert config["colocation"]["min_presence_rate"] == 0.01
+    assert config["colocation"]["max_candidates"] == 100
+
+
+def test_default_llm_agent_does_not_guess_live_model() -> None:
+    config = load_config()
+
+    assert config["agent"]["llm"]["mode"] == "deterministic"
+    assert config["agent"]["llm"]["model_name"] is None
+    assert config["agent"]["llm"]["prompt_pack"] == "prompts/agent/falsification_loop.yaml"

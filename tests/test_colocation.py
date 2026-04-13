@@ -144,3 +144,82 @@ def test_score_colocation_no_filtering_outputs_low_signal_candidates(tmp_path: P
     ]
     assert summary["candidates"] == 3
     assert {row["cluster_30"] for row in candidates} == {"neighborA", "neighborB"}
+
+
+def write_exploratory_background(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "total_90_representatives": 100000,
+                "clusters": [
+                    {
+                        "cluster_30": "common",
+                        "count_90_representatives": 20,
+                        "background_probability": 0.0002,
+                    },
+                    {
+                        "cluster_30": "rarer",
+                        "count_90_representatives": 10,
+                        "background_probability": 0.0001,
+                    },
+                    {
+                        "cluster_30": "too_sparse",
+                        "count_90_representatives": 10,
+                        "background_probability": 0.0001,
+                    },
+                    {
+                        "cluster_30": "self30",
+                        "count_90_representatives": 50,
+                        "background_probability": 0.0005,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_score_colocation_uses_exploratory_sorting_top_n_and_filter_diagnostics(tmp_path: Path) -> None:
+    background_path = tmp_path / "background.json"
+    contexts_path = tmp_path / "cohort_contexts.jsonl"
+    out_dir = tmp_path / "score"
+    write_exploratory_background(background_path)
+    records = []
+    for index in range(100):
+        neighbors = []
+        if index < 20:
+            neighbors.append((f"common_{index}", "common"))
+        if index < 30:
+            neighbors.append((f"rarer_{index}", "rarer"))
+        if index < 2:
+            neighbors.append((f"too_sparse_{index}", "too_sparse"))
+        records.append(context_record(f"target{index}", ["q1"], neighbors))
+    contexts_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+    summary = score_colocation(
+        cohort_contexts=contexts_path,
+        background=background_path,
+        out_dir=out_dir,
+        min_contexts=3,
+        min_presence_rate=0.01,
+        min_fold_enrichment=2.0,
+        max_qvalue=0.05,
+        max_examples=5,
+        max_candidates=1,
+        no_filtering=False,
+    )
+
+    candidates = [
+        json.loads(line)
+        for line in (out_dir / "candidate_neighbors.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    tsv = (out_dir / "candidate_neighbors.tsv").read_text(encoding="utf-8")
+    assert [row["cluster_30"] for row in candidates] == ["rarer"]
+    assert summary["candidates_before_limit"] == 2
+    assert summary["candidates"] == 1
+    assert summary["max_candidates"] == 1
+    assert summary["filter_diagnostics"]["presence_contexts"] == 2
+    assert summary["filter_diagnostics"]["combined_before_limit"] == 2
+    assert "example_neighbor_ids" in tsv.splitlines()[0]
+    assert "example_products" in tsv.splitlines()[0]
+    assert "neighbor protein" in tsv
