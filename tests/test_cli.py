@@ -370,6 +370,20 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
             str(tmp_path / "prompt.yaml"),
             "--max-iterations",
             "8",
+            "--agent-workflow",
+            "team",
+            "--max-team-rounds",
+            "3",
+            "--team-prompt-dir",
+            str(tmp_path / "team_prompts"),
+            "--team-schema-retries",
+            "4",
+            "--team-ledger-dir",
+            "candidate_ledgers",
+            "--literature-max-results",
+            "7",
+            "--agent-mmseqs-max-hits",
+            "9",
         ],
     )
 
@@ -393,6 +407,13 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
     assert payload["agent"]["llm"]["max_tokens"] == 1234
     assert payload["agent"]["llm"]["prompt_pack"] == str(tmp_path / "prompt.yaml")
     assert payload["agent"]["llm"]["max_iterations"] == 8
+    assert payload["agent"]["workflow"] == "team"
+    assert payload["agent"]["team"]["max_rounds"] == 3
+    assert payload["agent"]["team"]["prompt_dir"] == str(tmp_path / "team_prompts")
+    assert payload["agent"]["team"]["schema_retries"] == 4
+    assert payload["agent"]["team"]["ledger_dir"] == "candidate_ledgers"
+    assert payload["agent"]["literature"]["max_results_per_source"] == 7
+    assert payload["agent"]["tools"]["mmseqs"]["max_hits"] == 9
 
 
 def test_inspect_reports_sqlite_and_manifest_status(tmp_path: Path) -> None:

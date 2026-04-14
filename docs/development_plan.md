@@ -40,16 +40,17 @@ Run evidence construction and falsification-first reasoning on individual strong
 - Generate falsification checklists and rule-based status labels.
 - Add a replayable LLM loop with centralized YAML prompt packs.
 - Keep initial LLM actions limited to read-only evidence observations.
-- Produce JSONL traces and Markdown evidence reports.
-- Defer automatic InterProScan execution to a later phase.
+- Add a candidate-level multi-agent ledger workflow for literature grounding, hypothesis generation, evidence-needs derivation, tool planning, evidence audit, hypothesis revision, and synthesis.
+- Add allowlisted literature retrieval, candidate-protein MMseqs, context/annotation summaries, and on-demand InterProScan evidence tools for team reasoning.
+- Produce JSONL traces, per-candidate JSON ledgers, and Markdown evidence reports.
 
 ## Phase 5: Reporting and Evidence System
 
 Build fuller reasoning and reporting outputs:
 
-- Evidence graph.
-- Contradiction ledger.
+- Fuller cross-candidate evidence graph.
+- Cross-candidate contradiction analysis.
 - Tool execution trace.
 - Optional deterministic annotation tool execution.
-- Stronger literature/domain evidence integration around the existing LLM loop.
+- Stronger evidence graph construction around the team workflow.
 - Final report with accepted and rejected hypotheses.

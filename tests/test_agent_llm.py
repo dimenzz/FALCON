@@ -81,6 +81,7 @@ def test_reason_candidates_with_mock_llm_writes_trace_and_report(tmp_path: Path)
     ]
 
     assert summary["llm_mode"] == "mock"
+    assert summary["workflow"] == "single"
     assert summary["agent_trace"] == str(out_dir / "agent_trace.jsonl")
     assert results[0]["reasoning"]["status"] == "novel_candidate"
     assert results[0]["llm_trace"]["iterations"] == 3
@@ -130,6 +131,34 @@ def test_llm_loop_marks_incomplete_when_max_iterations_are_exhausted(tmp_path: P
     assert summary["status_counts"] == {"incomplete": 1}
     assert result["reasoning"]["status"] == "incomplete"
     assert "maximum LLM iterations" in result["reasoning"]["rationale"]
+
+
+def test_single_workflow_requires_llm_mode(tmp_path: Path) -> None:
+    proteins_db, clusters_db = create_agent_databases(tmp_path)
+    protein_manifest, genome_manifest = create_agent_sequences(tmp_path)
+    candidates_path = tmp_path / "candidate_neighbors.jsonl"
+    write_candidate(candidates_path)
+
+    try:
+        reason_candidates(
+            candidates_path=candidates_path,
+            proteins_db=proteins_db,
+            clusters_db=clusters_db,
+            protein_manifest=protein_manifest,
+            genome_manifest=genome_manifest,
+            out_dir=tmp_path / "agent",
+            max_candidates=10,
+            max_examples=5,
+            include_sequences=False,
+            flank_bp=3,
+            sequence_max_bases=100,
+            workflow="single",
+            llm_mode="deterministic",
+        )
+    except ValueError as exc:
+        assert "agent.workflow=single requires agent.llm.mode" in str(exc)
+    else:
+        raise AssertionError("Expected explicit single workflow to require an LLM mode")
 
 
 def test_reason_candidates_can_replay_recorded_llm_calls(tmp_path: Path) -> None:

@@ -31,6 +31,67 @@ def render_agent_report(result: dict[str, Any]) -> str:
             lines.append(f"- {evidence}")
         lines.append("")
 
+    ledger = result.get("ledger")
+    if ledger:
+        literature = ledger.get("literature", {})
+        brief = literature.get("brief", {})
+        lines.extend(["## Literature Grounding", ""])
+        if brief:
+            lines.append(f"- Summary: {brief.get('summary', '')}")
+            for finding in brief.get("key_findings", []):
+                lines.append(f"- Finding: {finding}")
+            for constraint in brief.get("constraints", []):
+                lines.append(f"- Constraint: {constraint}")
+        else:
+            lines.append("- No literature brief recorded.")
+        for record in literature.get("records", [])[:5]:
+            ref = record.get("evidence_ref")
+            title = record.get("title")
+            pmid = record.get("pmid")
+            lines.append(f"- {ref}: {title} (PMID: {pmid})")
+        lines.append("")
+
+        lines.extend(["## Hypotheses", ""])
+        for hypothesis in ledger.get("hypotheses", []):
+            lines.append(f"- {hypothesis.get('id')}: {hypothesis.get('claim')}")
+        if not ledger.get("hypotheses"):
+            lines.append("- No hypotheses recorded.")
+        lines.append("")
+
+        lines.extend(["## Hypothesis-Specific Falsification Tests", ""])
+        for test in ledger.get("falsification_tests", []):
+            lines.append(f"- {test.get('id')} ({test.get('hypothesis_id')}): {test.get('question')}")
+            lines.append(f"  Support: {test.get('support_criteria')}")
+            lines.append(f"  Weaken: {test.get('weaken_criteria')}")
+            lines.append(f"  Falsify: {test.get('falsify_criteria')}")
+        if not ledger.get("falsification_tests"):
+            lines.append("- No hypothesis-specific tests recorded.")
+        lines.append("")
+
+        lines.extend(["## Audit and Revision", ""])
+        for finding in ledger.get("audit", {}).get("findings", []):
+            lines.append(
+                f"- {finding.get('test_id')} / {finding.get('hypothesis_id')}: "
+                f"{finding.get('verdict')} - {finding.get('rationale')}"
+            )
+        for revision in ledger.get("revisions", []):
+            for hypothesis in revision.get("revised_hypotheses", []):
+                lines.append(
+                    f"- Revised {hypothesis.get('id')} v{hypothesis.get('version')}: "
+                    f"{hypothesis.get('status')} - {hypothesis.get('claim')}"
+                )
+        if not ledger.get("audit", {}).get("findings") and not ledger.get("revisions"):
+            lines.append("- No audit findings recorded.")
+        lines.append("")
+
+        lines.extend(["## Contradiction Ledger", ""])
+        if ledger.get("contradiction_ledger"):
+            for contradiction in ledger["contradiction_ledger"]:
+                lines.append(f"- {contradiction}")
+        else:
+            lines.append("- No contradictions recorded.")
+        lines.append("")
+
     if "llm_trace" in result:
         trace = result["llm_trace"]
         lines.extend(
@@ -49,7 +110,33 @@ def render_agent_report(result: dict[str, Any]) -> str:
             lines.append(f"- Contradiction: {contradiction}")
         lines.append("")
 
-    lines.extend(["## Falsification Checklist", ""])
+    if "team_trace" in result:
+        trace = result["team_trace"]
+        lines.extend(
+            [
+                "## Multi-Agent Review",
+                "",
+                f"- Rounds: {trace['rounds']}",
+                f"- Ledger blocked: {trace.get('ledger_blocked', bool(trace.get('blocked_step')))}",
+            ]
+        )
+        for hypothesis in trace.get("hypotheses", []):
+            if isinstance(hypothesis, dict):
+                lines.append(f"- Hypothesis: {hypothesis.get('claim')}")
+            else:
+                lines.append(f"- Hypothesis: {hypothesis}")
+        for contradiction in trace.get("contradictions", trace.get("criticisms", [])):
+            lines.append(f"- Contradiction: {contradiction}")
+        lines.append("")
+
+    if result.get("tool_results"):
+        lines.extend(["## Tool Results", ""])
+        for tool_result in result["tool_results"]:
+            lines.append(f"- {tool_result.get('tool')}: {tool_result.get('status')}")
+        lines.append("")
+
+    checklist_title = "## Deterministic Checks" if ledger else "## Falsification Checklist"
+    lines.extend([checklist_title, ""])
     for item in result["falsification_checklist"]:
         lines.append(f"- [{item['status']}] {item['question']} - {item['evidence']}")
 

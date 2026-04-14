@@ -68,10 +68,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_bases": 20000,
     },
     "agent": {
+        "workflow": "deterministic",
         "max_candidates": 50,
         "max_examples": 5,
         "include_sequences": False,
         "flank_bp": 0,
+        "team": {
+            "max_rounds": 2,
+            "prompt_dir": "prompts/agent/team",
+            "schema_retries": 2,
+            "ledger_dir": "ledgers",
+        },
+        "tools": {
+            "interproscan": {
+                "policy": "on_demand",
+            },
+            "mmseqs": {
+                "max_hits": 25,
+            },
+        },
+        "literature": {
+            "sources": ["europe_pmc", "pubmed"],
+            "max_results_per_source": 5,
+        },
         "llm": {
             "mode": "deterministic",
             "provider": "openai",

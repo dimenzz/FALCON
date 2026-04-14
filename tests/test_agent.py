@@ -138,6 +138,7 @@ def test_reason_candidates_writes_evidence_results_and_markdown(tmp_path: Path) 
         for line in (out_dir / "agent_results.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert summary["candidates_processed"] == 1
+    assert summary["workflow"] == "deterministic"
     assert results[0]["candidate"]["cluster_30"] == "neighbor30"
     assert results[0]["reasoning"]["status"] == "supported"
     assert results[0]["sequence_evidence"]["protein"]["available"] is True

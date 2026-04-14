@@ -8,7 +8,7 @@ FALCON is a falsification-first metagenomic discovery system. Development should
 - Treat `proteins.db` occurrence rows as the canonical source for genomic context and annotations.
 - Treat `clusters.db` as the canonical source for 90% and 30% cluster membership.
 - Do not scatter FASTA path parsing across modules; sequence access must go through the manifest/sequence data layer.
-- Keep deterministic data extraction separate from LLM reasoning. The LLM loop may only consume structured evidence packets and allowed read-only observations.
+- Keep deterministic data extraction separate from LLM reasoning. The LLM loop may consume structured evidence packets and request fixed allowlisted tools through the tool registry; it must not execute arbitrary shell commands.
 - Keep agent prompts centralized under `prompts/agent/`; do not scatter prompt text across CLI or data modules.
 - Do not add dynamic tool generation or heavy external tool orchestration without a new design pass.
 - Do not make claims without provenance. Future reports must link conclusions to raw observations, tool calls, and reasoning steps.
@@ -25,7 +25,7 @@ FALCON is a falsification-first metagenomic discovery system. Development should
 - External tool stdout/stderr should be captured to log files, not mixed into normal CLI JSON output.
 - Sequence access should go through the manifest-backed sequence layer.
 - Live LLM mode must require an explicit `agent.llm.model_name` from YAML or CLI. Do not guess a default model.
-- LLM loop actions must remain allowlisted and auditable through trace artifacts.
+- LLM loop actions must remain allowlisted and auditable through trace artifacts and per-candidate ledgers.
 
 ## Cluster Semantics
 

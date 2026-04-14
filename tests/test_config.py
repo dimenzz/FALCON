@@ -52,6 +52,14 @@ def test_default_colocation_filtering_is_exploratory() -> None:
 def test_default_llm_agent_does_not_guess_live_model() -> None:
     config = load_config()
 
+    assert config["agent"]["workflow"] == "deterministic"
     assert config["agent"]["llm"]["mode"] == "deterministic"
     assert config["agent"]["llm"]["model_name"] is None
     assert config["agent"]["llm"]["prompt_pack"] == "prompts/agent/falsification_loop.yaml"
+    assert config["agent"]["team"]["max_rounds"] == 2
+    assert config["agent"]["team"]["prompt_dir"] == "prompts/agent/team"
+    assert config["agent"]["team"]["schema_retries"] == 2
+    assert config["agent"]["team"]["ledger_dir"] == "ledgers"
+    assert config["agent"]["tools"]["interproscan"]["policy"] == "on_demand"
+    assert config["agent"]["tools"]["mmseqs"]["max_hits"] == 25
+    assert config["agent"]["literature"]["sources"] == ["europe_pmc", "pubmed"]

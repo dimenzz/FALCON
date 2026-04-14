@@ -57,15 +57,31 @@ sequence:
   max_bases: 20000
 
 agent:
+  workflow: team
   max_candidates: 50
   max_examples: 5
   include_sequences: false
   flank_bp: 0
+  team:
+    max_rounds: 2
+    prompt_dir: prompts/agent/team
+    schema_retries: 2
+    ledger_dir: ledgers
+  tools:
+    interproscan:
+      policy: on_demand
+    mmseqs:
+      max_hits: 25
+  literature:
+    sources:
+      - europe_pmc
+      - pubmed
+    max_results_per_source: 5
   llm:
-    mode: deterministic
+    mode: live
     provider: openai
-    model_name:
-    base_url:
+    model_name: gemma
+    base_url: http://10.11.65.65:8317/v1
     api_key_env: OPENAI_API_KEY
     temperature: 0.2
     max_tokens: 2000

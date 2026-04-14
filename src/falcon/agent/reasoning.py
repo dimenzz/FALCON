@@ -8,12 +8,19 @@ import re
 from falcon.agent.loop import run_llm_loop
 from falcon.agent.prompts import PromptPack, load_prompt_pack
 from falcon.agent.providers import LLMProvider, OpenAIChatProvider, ReplayLLMProvider, ScriptedLLMProvider
+from falcon.agent.team import run_team_loop
 from falcon.context.extractor import extract_context
 from falcon.data.clusters import ClusterRepository
 from falcon.data.proteins import ProteinNotFoundError, ProteinRepository
 from falcon.data.sequences import SequenceRepository
 from falcon.homology.search import write_jsonl
+from falcon.literature.search import DualLiteratureClient, LiteratureClient
 from falcon.reporting.markdown import render_agent_report
+from falcon.tools.agent_registry import (
+    EvidenceToolExecutor,
+    build_candidate_mmseqs_runner,
+    build_interproscan_runner,
+)
 
 
 def reason_candidates(
@@ -29,9 +36,26 @@ def reason_candidates(
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
+    workflow: str = "deterministic",
     llm_mode: str = "deterministic",
     prompt_pack: Path | str | None = None,
     max_iterations: int = 6,
+    max_team_rounds: int = 2,
+    team_prompt_dir: Path | str | None = None,
+    team_schema_retries: int = 2,
+    team_ledger_dir: Path | str = "ledgers",
+    literature_max_results: int = 5,
+    interproscan_policy: str = "on_demand",
+    interproscan_path: Path | str | None = None,
+    interproscan_threads: int = 1,
+    mmseqs_path: Path | str | None = None,
+    mmseqs_db_root: Path | str | None = None,
+    mmseqs_search_level: int = 90,
+    mmseqs_sensitivity: float = 7.5,
+    mmseqs_evalue: float = 1e-3,
+    mmseqs_max_hits: int = 25,
+    mmseqs_threads: int = 1,
+    log_dir: Path | str = "logs",
     llm_model_name: str | None = None,
     llm_base_url: str | None = None,
     llm_api_key_env: str = "OPENAI_API_KEY",
@@ -39,25 +63,42 @@ def reason_candidates(
     llm_max_tokens: int = 2000,
     replay_path: Path | str | None = None,
     llm_provider: LLMProvider | None = None,
+    literature_client: LiteratureClient | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(out_dir)
     reports_dir = output_dir / "reports"
+    ledgers_dir = output_dir / Path(team_ledger_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
+    ledgers_dir.mkdir(parents=True, exist_ok=True)
 
     candidates = _read_jsonl(candidates_path)
     if max_candidates is not None:
         candidates = candidates[: int(max_candidates)]
 
+    normalized_workflow = str(workflow)
     normalized_llm_mode = str(llm_mode)
+    if normalized_workflow not in {"deterministic", "single", "team"}:
+        raise ValueError(f"Unsupported agent.workflow: {normalized_workflow}")
+    if normalized_workflow == "deterministic" and normalized_llm_mode != "deterministic":
+        normalized_workflow = "single"
     prompt_pack_obj: PromptPack | None = None
     provider: LLMProvider | None = None
     trace_records: list[dict[str, Any]] = []
     call_records: list[dict[str, Any]] = []
+    team_trace_records: list[dict[str, Any]] = []
+    tool_plan_records: list[dict[str, Any]] = []
+    tool_result_records: list[dict[str, Any]] = []
+    literature_records: list[dict[str, Any]] = []
+    if normalized_workflow in {"single", "team"} and normalized_llm_mode == "deterministic":
+        raise ValueError(
+            f"agent.workflow={normalized_workflow} requires agent.llm.mode to be mock, live, or replay"
+        )
     if normalized_llm_mode != "deterministic":
-        if prompt_pack is None:
+        if normalized_workflow != "team" and prompt_pack is None:
             raise ValueError("agent.llm.prompt_pack must be set when LLM mode is enabled")
-        prompt_pack_obj = load_prompt_pack(prompt_pack)
+        if normalized_workflow != "team":
+            prompt_pack_obj = load_prompt_pack(prompt_pack)
         provider = llm_provider or _build_llm_provider(
             mode=normalized_llm_mode,
             model_name=llm_model_name,
@@ -67,6 +108,30 @@ def reason_candidates(
             max_tokens=llm_max_tokens,
             replay_path=replay_path,
         )
+    interproscan_runner = build_interproscan_runner(
+        interproscan_path=interproscan_path,
+        threads=interproscan_threads,
+        output_dir=output_dir,
+        log_dir=log_dir,
+    )
+    candidate_mmseqs_runner = build_candidate_mmseqs_runner(
+        mmseqs_path=mmseqs_path,
+        mmseqs_db_root=mmseqs_db_root,
+        output_dir=output_dir,
+        log_dir=log_dir,
+        search_level=mmseqs_search_level,
+        sensitivity=mmseqs_sensitivity,
+        evalue=mmseqs_evalue,
+        max_hits=mmseqs_max_hits,
+        threads=mmseqs_threads,
+    )
+    tool_executor = EvidenceToolExecutor(
+        literature_client=literature_client or (DualLiteratureClient() if normalized_workflow == "team" else None),
+        interproscan_runner=interproscan_runner,
+        mmseqs_runner=candidate_mmseqs_runner,
+        literature_max_results=literature_max_results,
+        interproscan_policy=interproscan_policy,
+    )
 
     results = []
     with ProteinRepository(proteins_db) as proteins, ClusterRepository(clusters_db) as clusters, SequenceRepository(
@@ -84,17 +149,27 @@ def reason_candidates(
                 proteins_db=proteins_db,
                 clusters_db=clusters_db,
                 reports_dir=reports_dir,
+                ledgers_dir=ledgers_dir,
                 max_examples=max_examples,
                 include_sequences=include_sequences,
                 flank_bp=flank_bp,
                 sequence_max_bases=sequence_max_bases,
+                workflow=normalized_workflow,
                 llm_mode=normalized_llm_mode,
                 prompt_pack=prompt_pack_obj,
                 llm_provider=provider,
                 max_iterations=max_iterations,
+                max_team_rounds=max_team_rounds,
+                team_prompt_dir=team_prompt_dir,
+                team_schema_retries=team_schema_retries,
+                tool_executor=tool_executor,
             )
             trace_records.extend(result.pop("_agent_trace_records", []))
             call_records.extend(result.pop("_llm_call_records", []))
+            team_trace_records.extend(result.pop("_team_trace_records", []))
+            tool_plan_records.extend(result.pop("_tool_plan_records", []))
+            tool_result_records.extend(result.pop("_tool_result_records", []))
+            literature_records.extend(result.pop("_literature_records", []))
             results.append(result)
 
     results_path = output_dir / "agent_results.jsonl"
@@ -104,6 +179,15 @@ def reason_candidates(
     if normalized_llm_mode != "deterministic":
         write_jsonl(trace_records, trace_path)
         write_jsonl(call_records, calls_path)
+    team_trace_path = output_dir / "agent_team_trace.jsonl"
+    tool_plan_path = output_dir / "tool_plan.jsonl"
+    tool_results_path = output_dir / "tool_results.jsonl"
+    literature_path = output_dir / "literature_evidence.jsonl"
+    if normalized_workflow == "team":
+        write_jsonl(team_trace_records, team_trace_path)
+        write_jsonl(tool_plan_records, tool_plan_path)
+        write_jsonl(tool_result_records, tool_results_path)
+        write_jsonl(literature_records, literature_path)
     summary = {
         "candidates_input": str(candidates_path),
         "candidates_processed": len(results),
@@ -111,10 +195,17 @@ def reason_candidates(
         "reports_dir": str(reports_dir),
         "status_counts": _status_counts(results),
         "llm_mode": normalized_llm_mode,
+        "workflow": normalized_workflow,
     }
     if normalized_llm_mode != "deterministic":
         summary["agent_trace"] = str(trace_path)
         summary["llm_calls"] = str(calls_path)
+    if normalized_workflow == "team":
+        summary["agent_team_trace"] = str(team_trace_path)
+        summary["tool_plan"] = str(tool_plan_path)
+        summary["tool_results"] = str(tool_results_path)
+        summary["literature_evidence"] = str(literature_path)
+        summary["candidate_ledgers"] = str(ledgers_dir)
     (output_dir / "agent_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -132,14 +223,20 @@ def _reason_candidate(
     proteins_db: Path | str,
     clusters_db: Path | str,
     reports_dir: Path,
+    ledgers_dir: Path,
     max_examples: int,
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
+    workflow: str,
     llm_mode: str,
     prompt_pack: PromptPack | None,
     llm_provider: LLMProvider | None,
     max_iterations: int,
+    max_team_rounds: int,
+    team_prompt_dir: Path | str | None,
+    team_schema_retries: int,
+    tool_executor: EvidenceToolExecutor,
 ) -> dict[str, Any]:
     examples = []
     uncertainties = []
@@ -174,7 +271,43 @@ def _reason_candidate(
         "reasoning": reasoning,
         "uncertainties": uncertainties,
     }
-    if llm_mode != "deterministic":
+    if workflow == "team":
+        if llm_provider is None:
+            raise ValueError("LLM provider is required for team workflow")
+        if sequence_evidence["protein"].get("available") and "sequence" not in sequence_evidence["protein"]:
+            sequence_evidence = _sequence_evidence(
+                protein_id=representative_neighbor_id,
+                sequences=sequences,
+                include_sequences=True,
+                flank_bp=flank_bp,
+                sequence_max_bases=sequence_max_bases,
+                uncertainties=uncertainties,
+            )
+            result["sequence_evidence"] = sequence_evidence
+        team_result = run_team_loop(
+            candidate_index=candidate_index,
+            candidate_slug=_candidate_slug(candidate),
+            evidence=result,
+            provider=llm_provider,
+            tool_executor=tool_executor,
+            max_rounds=max_team_rounds,
+            prompt_dir=team_prompt_dir,
+            schema_retries=team_schema_retries,
+        )
+        result["reasoning"] = team_result.reasoning
+        result["team_trace"] = team_result.team_trace
+        result["tool_results"] = team_result.tool_results
+        result["literature_evidence"] = team_result.literature_evidence
+        result["uncertainties"].extend(team_result.uncertainties)
+        result["ledger"] = team_result.ledger
+        ledger_path = ledgers_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.json"
+        ledger_path.write_text(json.dumps(team_result.ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        result["ledger_path"] = str(ledger_path)
+        result["_team_trace_records"] = team_result.role_calls
+        result["_tool_plan_records"] = team_result.tool_plan
+        result["_tool_result_records"] = team_result.tool_results
+        result["_literature_records"] = team_result.literature_evidence
+    elif llm_mode != "deterministic":
         if prompt_pack is None or llm_provider is None:
             raise ValueError("LLM prompt pack and provider are required when LLM mode is enabled")
         loop_result = run_llm_loop(
@@ -194,6 +327,7 @@ def _reason_candidate(
     report_path = reports_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.md"
     result["report_path"] = str(report_path)
     report_path.write_text(render_agent_report(result), encoding="utf-8")
+    result.pop("ledger", None)
     return result
 
 
