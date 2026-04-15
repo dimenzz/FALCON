@@ -10,11 +10,19 @@ from falcon.agent.actions import FINAL_STATUSES
 from falcon.agent.providers import LLMProvider
 from falcon.agent.team.ledger import (
     CandidateLedger,
+    add_audit_nodes,
+    add_evidence_need_nodes,
+    add_falsification_test_nodes,
+    add_final_claim_node,
+    add_hypothesis_nodes,
     add_literature_records,
+    add_revision_node,
+    add_tool_request_nodes,
     add_tool_observations,
     initialize_ledger,
     mark_blocked,
 )
+from falcon.agent.team.context_pack import build_role_context_pack
 from falcon.agent.team.roles import (
     evidence_auditor,
     evidence_needs,
@@ -26,6 +34,7 @@ from falcon.agent.team.roles import (
 )
 from falcon.agent.team.roles.base import RoleOutputError, RoleRunner
 from falcon.tools.agent_registry import EvidenceToolExecutor
+from falcon.tools.manifest import ToolManifest, default_tool_manifest
 
 TEAM_ROLES = (
     "literature_scout",
@@ -60,9 +69,12 @@ def run_team_loop(
     max_rounds: int,
     prompt_dir: Path | str | None = None,
     schema_retries: int = 2,
+    tool_manifest: ToolManifest | None = None,
+    event_logger: Any | None = None,
 ) -> TeamLoopResult:
     role_calls: list[dict[str, Any]] = []
     ledger = initialize_ledger(candidate_index=candidate_index, candidate_slug=candidate_slug, evidence=evidence)
+    manifest = tool_manifest or default_tool_manifest()
     runner = RoleRunner(
         provider=provider,
         role_instructions=load_team_role_instructions(prompt_dir),
@@ -70,70 +82,75 @@ def run_team_loop(
         candidate_slug=candidate_slug,
         schema_retries=schema_retries,
         role_calls=role_calls,
+        event_logger=event_logger,
     )
 
     try:
-        _run_literature_grounding(runner, tool_executor, evidence, ledger)
-        _run_hypothesis_and_evidence_planning(runner, ledger)
+        _emit_event(event_logger, "candidate_started", candidate_slug=candidate_slug, candidate_index=candidate_index)
+        _run_literature_grounding(runner, tool_executor, evidence, ledger, tool_manifest=manifest)
+        _run_hypothesis_and_evidence_planning(runner, ledger, evidence=evidence, tool_manifest=manifest)
         for round_index in range(1, max(1, int(max_rounds)) + 1):
             ledger["active_round"] = round_index
             plan = tool_planner.plan(
                 runner,
-                {
-                    "round": round_index,
-                    "candidate": ledger["candidate"],
-                    "hypotheses": ledger["hypotheses"],
-                    "falsification_tests": ledger["falsification_tests"],
-                    "evidence_needs": ledger["evidence_needs"],
-                    "available_tools": sorted(EvidenceToolExecutor.allowlisted_tools),
-                    "ledger_snapshot": _compact_ledger_for_role(ledger),
-                },
+                _with_task_context(
+                    build_role_context_pack(
+                        role="tool_planner",
+                        ledger=ledger,
+                        evidence=evidence,
+                        tool_manifest=manifest,
+                    ),
+                    round=round_index,
+                ),
             )
-            ledger["tool_plan"].extend([request.model_dump(mode="json") for request in plan.tool_requests])
+            tool_requests = [request.model_dump(mode="json") for request in plan.tool_requests]
+            ledger["tool_plan"].extend(tool_requests)
+            add_tool_request_nodes(ledger, tool_requests, created_by="tool_planner")
             if plan.skipped_needs:
                 ledger["skipped_evidence_needs"] = [item.model_dump(mode="json") for item in plan.skipped_needs]
             tool_results, literature_records = tool_executor.execute_requests(
-                [request.model_dump(mode="json") for request in plan.tool_requests],
+                tool_requests,
                 evidence,
+                event_context={"candidate_slug": candidate_slug, "candidate_index": candidate_index, "round": round_index},
             )
             add_tool_observations(ledger, tool_results)
             add_literature_records(ledger, literature_records)
 
             audit = evidence_auditor.audit(
                 runner,
-                {
-                    "round": round_index,
-                    "candidate": ledger["candidate"],
-                    "hypotheses": ledger["hypotheses"],
-                    "falsification_tests": ledger["falsification_tests"],
-                    "tool_observations": ledger["tool_observations"],
-                    "literature": ledger["literature"],
-                },
+                _with_task_context(
+                    build_role_context_pack(role="evidence_auditor", ledger=ledger, evidence=evidence, tool_manifest=manifest),
+                    round=round_index,
+                ),
             )
-            ledger["audit"]["findings"].extend([finding.model_dump(mode="json") for finding in audit.audits])
+            audit_findings = [finding.model_dump(mode="json") for finding in audit.audits]
+            ledger["audit"]["findings"].extend(audit_findings)
+            add_audit_nodes(ledger, audit_findings, created_by="evidence_auditor")
 
             revision = hypothesis_reviser.revise(
                 runner,
-                {
-                    "round": round_index,
-                    "candidate": ledger["candidate"],
-                    "hypotheses": ledger["hypotheses"],
-                    "audit": ledger["audit"],
-                    "tool_observations": ledger["tool_observations"],
-                    "literature": ledger["literature"],
-                },
+                _with_task_context(
+                    build_role_context_pack(role="hypothesis_reviser", ledger=ledger, evidence=evidence, tool_manifest=manifest),
+                    round=round_index,
+                ),
             )
-            ledger["revisions"].append(revision.model_dump(mode="json"))
+            revision_payload = revision.model_dump(mode="json")
+            ledger["revisions"].append(revision_payload)
+            add_revision_node(ledger, revision_payload, created_by="hypothesis_reviser")
             ledger["contradiction_ledger"].extend(revision.contradictions)
             if revision.revised_hypotheses:
-                ledger["hypotheses"].extend([hypothesis.model_dump(mode="json") for hypothesis in revision.revised_hypotheses])
+                revised_hypotheses = [hypothesis.model_dump(mode="json") for hypothesis in revision.revised_hypotheses]
+                ledger["hypotheses"].extend(revised_hypotheses)
+                add_hypothesis_nodes(ledger, revised_hypotheses, created_by="hypothesis_reviser")
             if revision.rejected_hypotheses:
                 ledger["rejected_hypotheses"] = [item.model_dump(mode="json") for item in revision.rejected_hypotheses]
 
     except RoleOutputError as exc:
         mark_blocked(ledger, role=exc.role, attempts=exc.attempts, error=exc.message)
+    finally:
+        _emit_event(event_logger, "candidate_finished", candidate_slug=candidate_slug, candidate_index=candidate_index)
 
-    reasoning = _run_synthesis(runner, ledger)
+    reasoning = _run_synthesis(runner, ledger, evidence=evidence, tool_manifest=manifest)
     return _team_result(ledger=ledger, role_calls=role_calls, reasoning=reasoning)
 
 
@@ -142,15 +159,14 @@ def _run_literature_grounding(
     tool_executor: EvidenceToolExecutor,
     evidence: dict[str, Any],
     ledger: CandidateLedger,
+    tool_manifest: ToolManifest,
 ) -> None:
     plan = literature_scout.plan_queries(
         runner,
-        {
-            "task": "plan_literature_queries",
-            "candidate": ledger["candidate"],
-            "examples": _compact_examples(evidence),
-            "deterministic_checks": ledger["deterministic_checks"],
-        },
+        _with_task_context(
+            build_role_context_pack(role="literature_scout", ledger=ledger, evidence=evidence, tool_manifest=tool_manifest),
+            task="plan_literature_queries",
+        ),
     )
     ledger["literature"]["queries"] = list(plan.queries)
     query_requests = [
@@ -173,41 +189,35 @@ def _run_literature_grounding(
 
     brief = literature_scout.write_brief(
         runner,
-        {
-            "task": "write_literature_brief",
-            "candidate": ledger["candidate"],
-            "queries": ledger["literature"]["queries"],
-            "records": ledger["literature"]["records"],
-            "failed_queries": failed_queries,
-        },
+        _with_task_context(
+            build_role_context_pack(role="literature_scout", ledger=ledger, evidence=evidence, tool_manifest=tool_manifest),
+            task="write_literature_brief",
+        ),
     )
     ledger["literature"]["brief"] = brief.model_dump(mode="json")
 
 
-def _run_hypothesis_and_evidence_planning(runner: RoleRunner, ledger: CandidateLedger) -> None:
+def _run_hypothesis_and_evidence_planning(
+    runner: RoleRunner,
+    ledger: CandidateLedger,
+    *,
+    evidence: dict[str, Any],
+    tool_manifest: ToolManifest,
+) -> None:
     hypotheses = hypothesis_generator.generate(
         runner,
-        {
-            "candidate": ledger["candidate"],
-            "deterministic_checks": ledger["deterministic_checks"],
-            "literature": ledger["literature"],
-            "examples": ledger["examples"],
-        },
+        build_role_context_pack(role="hypothesis_generator", ledger=ledger, evidence=evidence, tool_manifest=tool_manifest),
     )
     ledger["hypotheses"] = [hypothesis.model_dump(mode="json") for hypothesis in hypotheses.hypotheses]
+    add_hypothesis_nodes(ledger, ledger["hypotheses"], created_by="hypothesis_generator")
 
     needs = evidence_needs.derive(
         runner,
-        {
-            "candidate": ledger["candidate"],
-            "hypotheses": ledger["hypotheses"],
-            "literature": ledger["literature"],
-            "deterministic_checks": ledger["deterministic_checks"],
-            "available_tools": sorted(EvidenceToolExecutor.allowlisted_tools),
-        },
+        build_role_context_pack(role="evidence_needs", ledger=ledger, evidence=evidence, tool_manifest=tool_manifest),
     )
     tests = [test.model_dump(mode="json") for test in needs.tests]
     ledger["falsification_tests"] = tests
+    add_falsification_test_nodes(ledger, tests, created_by="evidence_needs")
     ledger["evidence_needs"] = [
         {
             "test_id": test["id"],
@@ -217,17 +227,23 @@ def _run_hypothesis_and_evidence_planning(runner: RoleRunner, ledger: CandidateL
         }
         for test in tests
     ]
+    add_evidence_need_nodes(ledger, ledger["evidence_needs"], created_by="evidence_needs")
 
 
-def _run_synthesis(runner: RoleRunner, ledger: CandidateLedger) -> dict[str, Any]:
+def _run_synthesis(
+    runner: RoleRunner,
+    ledger: CandidateLedger,
+    *,
+    evidence: dict[str, Any],
+    tool_manifest: ToolManifest,
+) -> dict[str, Any]:
     try:
         synthesis = synthesizer.synthesize(
             runner,
-            {
-                "candidate": ledger["candidate"],
-                "ledger": _compact_ledger_for_role(ledger),
-                "blocked_step": ledger.get("blocked_step"),
-            },
+            _with_task_context(
+                build_role_context_pack(role="synthesizer", ledger=ledger, evidence=evidence, tool_manifest=tool_manifest),
+                blocked_step=ledger.get("blocked_step"),
+            ),
         )
         final = synthesis.model_dump(mode="json")
     except RoleOutputError as exc:
@@ -246,6 +262,7 @@ def _run_synthesis(runner: RoleRunner, ledger: CandidateLedger) -> dict[str, Any
         status = "insufficient"
     final["status"] = status
     ledger["final"] = final
+    add_final_claim_node(ledger, final, created_by="synthesizer")
     return {
         "status": status,
         "rationale": str(final.get("rationale") or "No synthesis rationale was provided."),
@@ -302,15 +319,28 @@ def load_team_role_instructions(prompt_dir: Path | str | None = None) -> dict[st
             raise ValueError(f"Team prompt {prompt_path} is missing required fields: {', '.join(missing)}")
         if str(payload["role"]) != role:
             raise ValueError(f"Team prompt {prompt_path} declares role {payload['role']!r}, expected {role!r}")
-        instructions[role] = "\n\n".join(
+        sections = [
+            str(payload["system"]),
+            f"Developer guidance: {payload['developer_guidance']}",
+        ]
+        if payload.get("context_requirements"):
+            sections.append(f"Context requirements:\n{_format_prompt_list(payload['context_requirements'])}")
+        if payload.get("few_shot_antipatterns"):
+            sections.append(f"Anti-patterns:\n{_format_prompt_list(payload['few_shot_antipatterns'])}")
+        sections.extend(
             [
-                str(payload["system"]),
-                f"Developer guidance: {payload['developer_guidance']}",
                 f"Output contract: {payload['output_contract']}",
                 "Return only JSON.",
             ]
         )
+        instructions[role] = "\n\n".join(sections)
     return instructions
+
+
+def _format_prompt_list(value: Any) -> str:
+    if isinstance(value, list):
+        return "\n".join(f"- {item}" for item in value)
+    return f"- {value}"
 
 
 def _role_instruction(role: str) -> str:
@@ -381,3 +411,14 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     return [str(value)]
+
+
+def _with_task_context(context: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    merged = dict(context)
+    merged.update(extra)
+    return merged
+
+
+def _emit_event(event_logger: Any | None, event: str, **payload: Any) -> None:
+    if event_logger is not None:
+        event_logger.emit(event, **payload)

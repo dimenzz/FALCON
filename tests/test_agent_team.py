@@ -4,9 +4,10 @@ from pathlib import Path
 import json
 
 from falcon.agent.providers import ScriptedLLMProvider
-from falcon.agent.team import run_team_loop
+from falcon.agent.team import load_team_role_instructions, run_team_loop
 from falcon.literature.search import LiteratureRecord, StaticLiteratureClient
 from falcon.tools.agent_registry import EvidenceToolExecutor
+from falcon.tools.manifest import default_tool_manifest
 
 
 def evidence_packet() -> dict:
@@ -271,3 +272,84 @@ def test_team_loop_writes_replayable_role_payloads() -> None:
     encoded = [json.dumps(record, sort_keys=True) for record in result.role_calls]
     assert all("messages" in record for record in result.role_calls)
     assert any("literature_scout" in record for record in encoded)
+
+
+def test_team_prompt_loader_includes_context_requirements_and_antipatterns(tmp_path: Path) -> None:
+    prompt_dir = tmp_path / "team_prompts"
+    prompt_dir.mkdir()
+    for role in (
+        "literature_scout",
+        "hypothesis_generator",
+        "evidence_needs",
+        "tool_planner",
+        "evidence_auditor",
+        "hypothesis_reviser",
+        "synthesizer",
+    ):
+        prompt_dir.joinpath(f"{role}.yaml").write_text(
+            f"""
+role: {role}
+system: System text.
+developer_guidance: Developer text.
+context_requirements:
+  - Read candidate_context.representative_neighbor before making candidate claims.
+few_shot_antipatterns:
+  - Do not convert neighbor Cas9 annotation into a candidate protein function.
+output_contract: Output text.
+""",
+            encoding="utf-8",
+        )
+
+    instructions = load_team_role_instructions(prompt_dir)
+
+    tool_planner_prompt = instructions["tool_planner"]
+    assert "Context requirements:" in tool_planner_prompt
+    assert "candidate_context.representative_neighbor" in tool_planner_prompt
+    assert "Anti-patterns:" in tool_planner_prompt
+    assert "neighbor Cas9 annotation" in tool_planner_prompt
+
+
+def test_team_prompt_loader_loads_repository_prompt_pack() -> None:
+    instructions = load_team_role_instructions("prompts/agent/team")
+
+    assert "tool_manifest" in instructions["tool_planner"]
+    assert "candidate protein evidence" in instructions["hypothesis_generator"]
+
+
+def test_team_loop_sends_context_pack_and_records_role_outputs_in_graph() -> None:
+    result = run_team_loop(
+        candidate_index=1,
+        candidate_slug="q1-neighbor30",
+        evidence=evidence_packet(),
+        provider=scripted_deep_loop_provider(),
+        tool_executor=EvidenceToolExecutor(
+            literature_client=StaticLiteratureClient(
+                [LiteratureRecord(source="pubmed", title="CRISPR accessory evidence", pmid="1")]
+            ),
+            interproscan_runner=lambda request, evidence: {"tool": "run_interproscan", "status": "ok"},
+            mmseqs_runner=lambda request, evidence: {"tool": "run_candidate_mmseqs", "status": "ok"},
+        ),
+        max_rounds=1,
+        tool_manifest=default_tool_manifest(),
+    )
+
+    planner_call = next(call for call in result.role_calls if call["role"] == "tool_planner")
+    planner_payload = json.loads(planner_call["messages"][1]["content"])
+
+    assert planner_payload["role"] == "tool_planner"
+    assert planner_payload["candidate_context"]["representative_neighbor"]["protein_id"] == "neighbor1"
+    assert {tool["id"] for tool in planner_payload["tool_manifest"]} >= {
+        "run_candidate_mmseqs",
+        "run_interproscan",
+    }
+    graph = result.ledger["evidence_graph"]
+    node_types = [node["type"] for node in graph["nodes"]]
+    assert "literature_record" in node_types
+    assert "hypothesis" in node_types
+    assert "falsification_test" in node_types
+    assert "evidence_need" in node_types
+    assert "tool_request" in node_types
+    assert "tool_observation" in node_types
+    assert "audit_finding" in node_types
+    assert "revision" in node_types
+    assert "final_claim" in node_types

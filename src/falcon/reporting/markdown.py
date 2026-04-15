@@ -51,6 +51,22 @@ def render_agent_report(result: dict[str, Any]) -> str:
             lines.append(f"- {ref}: {title} (PMID: {pmid})")
         lines.append("")
 
+        graph = ledger.get("evidence_graph") or {}
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
+        lines.extend(["## Evidence Graph", ""])
+        lines.append(f"- Nodes: {len(nodes)}")
+        lines.append(f"- Edges: {len(edges)}")
+        node_type_counts: dict[str, int] = {}
+        for node in nodes:
+            node_type = str(node.get("type") or "unknown")
+            node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
+        for node_type, count in sorted(node_type_counts.items()):
+            lines.append(f"- {node_type}: {count}")
+        if not nodes:
+            lines.append("- No evidence graph nodes recorded.")
+        lines.append("")
+
         lines.extend(["## Hypotheses", ""])
         for hypothesis in ledger.get("hypotheses", []):
             lines.append(f"- {hypothesis.get('id')}: {hypothesis.get('claim')}")

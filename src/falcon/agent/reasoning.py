@@ -9,6 +9,7 @@ from falcon.agent.loop import run_llm_loop
 from falcon.agent.prompts import PromptPack, load_prompt_pack
 from falcon.agent.providers import LLMProvider, OpenAIChatProvider, ReplayLLMProvider, ScriptedLLMProvider
 from falcon.agent.team import run_team_loop
+from falcon.agent.team.events import JsonlEventLogger
 from falcon.context.extractor import extract_context
 from falcon.data.clusters import ClusterRepository
 from falcon.data.proteins import ProteinNotFoundError, ProteinRepository
@@ -21,6 +22,7 @@ from falcon.tools.agent_registry import (
     build_candidate_mmseqs_runner,
     build_interproscan_runner,
 )
+from falcon.tools.manifest import ToolManifest, load_tool_manifest
 
 
 def reason_candidates(
@@ -44,6 +46,9 @@ def reason_candidates(
     team_prompt_dir: Path | str | None = None,
     team_schema_retries: int = 2,
     team_ledger_dir: Path | str = "ledgers",
+    tool_manifest_path: Path | str | None = None,
+    team_resume: str = "skip_completed",
+    max_expensive_tools_per_candidate: int | None = None,
     literature_max_results: int = 5,
     interproscan_policy: str = "on_demand",
     interproscan_path: Path | str | None = None,
@@ -56,6 +61,9 @@ def reason_candidates(
     mmseqs_max_hits: int = 25,
     mmseqs_threads: int = 1,
     log_dir: Path | str = "logs",
+    progress: bool = True,
+    heartbeat_seconds: int = 30,
+    event_log: Path | str = "agent_events.jsonl",
     llm_model_name: str | None = None,
     llm_base_url: str | None = None,
     llm_api_key_env: str = "OPENAI_API_KEY",
@@ -71,6 +79,8 @@ def reason_candidates(
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
     ledgers_dir.mkdir(parents=True, exist_ok=True)
+    event_logger = JsonlEventLogger(output_dir / Path(event_log), emit_to_stderr=bool(progress))
+    tool_manifest = load_tool_manifest(tool_manifest_path, runner_ids=EvidenceToolExecutor.allowlisted_tools)
 
     candidates = _read_jsonl(candidates_path)
     if max_candidates is not None:
@@ -113,6 +123,8 @@ def reason_candidates(
         threads=interproscan_threads,
         output_dir=output_dir,
         log_dir=log_dir,
+        event_logger=event_logger,
+        heartbeat_seconds=heartbeat_seconds,
     )
     candidate_mmseqs_runner = build_candidate_mmseqs_runner(
         mmseqs_path=mmseqs_path,
@@ -124,11 +136,16 @@ def reason_candidates(
         evalue=mmseqs_evalue,
         max_hits=mmseqs_max_hits,
         threads=mmseqs_threads,
+        event_logger=event_logger,
+        heartbeat_seconds=heartbeat_seconds,
     )
     tool_executor = EvidenceToolExecutor(
         literature_client=literature_client or (DualLiteratureClient() if normalized_workflow == "team" else None),
         interproscan_runner=interproscan_runner,
         mmseqs_runner=candidate_mmseqs_runner,
+        tool_manifest=tool_manifest,
+        max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
+        event_logger=event_logger,
         literature_max_results=literature_max_results,
         interproscan_policy=interproscan_policy,
     )
@@ -140,6 +157,35 @@ def reason_candidates(
         genome_manifest=genome_manifest,
     ) as sequences:
         for index, candidate in enumerate(candidates, start=1):
+            candidate_slug = _candidate_slug(candidate)
+            ledger_path = ledgers_dir / f"{index:04d}-{candidate_slug}.json"
+            if normalized_workflow == "team" and team_resume == "skip_completed" and _has_completed_ledger(ledger_path):
+                event_logger.emit(
+                    "candidate_skipped_existing_ledger",
+                    candidate_index=index,
+                    candidate_slug=candidate_slug,
+                    ledger_path=str(ledger_path),
+                )
+                results.append(
+                    {
+                        "candidate": _candidate_summary(candidate),
+                        "examples": [],
+                        "sequence_evidence": {"protein": {"available": False}, "dna": {"available": False}},
+                        "falsification_checklist": [],
+                        "reasoning": {
+                            "status": "skipped",
+                            "rationale": "Existing completed candidate ledger was reused.",
+                            "evidence": [],
+                        },
+                        "uncertainties": [],
+                        "ledger_path": str(ledger_path),
+                        "team_trace": {"workflow": "team", "rounds": 0, "ledger_blocked": False, "resumed": True},
+                        "tool_results": [],
+                        "literature_evidence": [],
+                        "report_path": str(reports_dir / f"{index:04d}-{candidate_slug}.md"),
+                    }
+                )
+                continue
             result = _reason_candidate(
                 candidate=candidate,
                 candidate_index=index,
@@ -162,6 +208,8 @@ def reason_candidates(
                 max_team_rounds=max_team_rounds,
                 team_prompt_dir=team_prompt_dir,
                 team_schema_retries=team_schema_retries,
+                tool_manifest=tool_manifest,
+                event_logger=event_logger,
                 tool_executor=tool_executor,
             )
             trace_records.extend(result.pop("_agent_trace_records", []))
@@ -206,6 +254,7 @@ def reason_candidates(
         summary["tool_results"] = str(tool_results_path)
         summary["literature_evidence"] = str(literature_path)
         summary["candidate_ledgers"] = str(ledgers_dir)
+        summary["agent_events"] = str(output_dir / Path(event_log))
     (output_dir / "agent_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -236,6 +285,8 @@ def _reason_candidate(
     max_team_rounds: int,
     team_prompt_dir: Path | str | None,
     team_schema_retries: int,
+    tool_manifest: ToolManifest,
+    event_logger: JsonlEventLogger,
     tool_executor: EvidenceToolExecutor,
 ) -> dict[str, Any]:
     examples = []
@@ -492,6 +543,17 @@ def _read_jsonl(path: Path | str) -> list[dict[str, Any]]:
             if line:
                 records.append(json.loads(line))
     return records
+
+
+def _has_completed_ledger(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    final = payload.get("final") if isinstance(payload, dict) else None
+    return isinstance(final, dict) and bool(final.get("status"))
 
 
 def _status_counts(results: list[dict[str, Any]]) -> dict[str, int]:

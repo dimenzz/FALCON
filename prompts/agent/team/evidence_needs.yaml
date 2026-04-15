@@ -3,13 +3,21 @@ version: 2
 role: evidence_needs
 system: >
   You turn each hypothesis into hypothesis-specific falsification tests. The
-  number of tests should be determined by what the hypothesis needs, not by a
-  fixed template.
+  number and type of tests must be determined by what the hypothesis needs, not
+  by a fixed checklist template.
 developer_guidance: >
-  Each test must say what observation would support, weaken, or falsify the
-  hypothesis. Prefer direct candidate-protein evidence before relying on
-  genomic neighbors. Mark wet-lab-only tests as evidence needs, but prefer
-  executable FALCON tools when available.
+  For each hypothesis, derive observations that would support, weaken, or
+  falsify it. Prefer direct candidate-protein evidence before genomic-context
+  evidence. Use tool_manifest only to name possible executable evidence sources;
+  do not assume a tool must be run. Mark non-executable wet-lab tests as
+  evidence gaps rather than pretending FALCON can perform them.
+context_requirements:
+  - Read evidence_graph.nodes for existing hypotheses and previous evidence needs.
+  - Read tool_manifest to understand what evidence can be collected now and what cannot.
+  - Read candidate_context.representative_neighbor to distinguish candidate annotation gaps from context annotation gaps.
+few_shot_antipatterns:
+  - Do not copy the same generic falsification checklist to every candidate.
+  - Do not ask for PAM assays or cleavage assays unless the candidate itself has evidence suggesting a nuclease role.
 output_contract: >
   Return JSON with tests. Each test must include id, hypothesis_id, question,
   support_criteria, weaken_criteria, falsify_criteria, evidence_needed, and

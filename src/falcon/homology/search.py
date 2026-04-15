@@ -77,6 +77,9 @@ def run_mmseqs_search(
     format_fields: list[str] | None = None,
     env: Mapping[str, str] | None = None,
     log_dir: Path | str = "logs",
+    event_logger: Any | None = None,
+    heartbeat_seconds: float | None = None,
+    event_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_tsv)
     tmp_path = Path(tmp_dir)
@@ -106,6 +109,9 @@ def run_mmseqs_search(
         log_dir=log_dir,
         label="mmseqs-easy-search",
         env=env,
+        event_logger=event_logger,
+        heartbeat_seconds=heartbeat_seconds,
+        event_context=event_context,
     )
 
 

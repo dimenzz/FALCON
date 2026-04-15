@@ -141,5 +141,6 @@ def test_reason_candidates_team_workflow_writes_candidate_ledgers_and_reports(tm
     assert ledger["final"]["unresolved_hypotheses"] == ["H1"]
     report = Path(results[0]["report_path"]).read_text(encoding="utf-8")
     assert "Literature Grounding" in report
+    assert "Evidence Graph" in report
     assert "Hypothesis-Specific Falsification Tests" in report
     assert "Contradiction Ledger" in report

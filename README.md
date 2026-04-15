@@ -203,22 +203,25 @@ uv run falcon agent reason \
   --base-url http://your-openai-compatible-endpoint/v1 \
   --max-team-rounds 2 \
   --team-prompt-dir prompts/agent/team \
+  --tool-manifest configs/tool_manifest.yaml \
+  --progress \
   --literature-max-results 5 \
   --agent-mmseqs-max-hits 25 \
   --out-dir runs/example-agent-team
 ```
 
-The team workflow uses a per-candidate ledger loop: literature grounding, hypothesis generation, evidence-needs derivation, tool planning, tool execution, evidence audit, hypothesis revision, and synthesis. Role prompts are loaded from `agent.team.prompt_dir`, and role outputs are validated with pydantic schemas before being written to the ledger. Tool execution remains deterministic and allowlisted. Literature search aggregates Europe PMC and PubMed records and de-duplicates by PMID, DOI, then title. InterProScan is on-demand, and candidate-specific MMseqs can be requested to check direct homology evidence for the candidate protein itself. Tool failures are recorded as evidence observations instead of aborting the candidate.
+The team workflow now uses a per-candidate evidence graph ledger. Each role receives a structured context pack with candidate-neighbor evidence, occurrence examples, literature citations and abstract excerpts, current graph state, unresolved gaps, and the YAML tool manifest. The `tool_planner` selects tools from `configs/tool_manifest.yaml`; prompts should not hard-code a preferred tool. Tool execution remains deterministic and allowlisted through the registry. Literature search aggregates Europe PMC and PubMed records and de-duplicates by PMID, DOI, then title. InterProScan and candidate-specific MMseqs are budget-aware manifest tools and can be skipped or deferred with an auditable reason. Tool failures are recorded as evidence observations instead of aborting the candidate.
 
 Team workflow artifacts include:
 
 - `agent_team_trace.jsonl`
+- `agent_events.jsonl`
 - `tool_plan.jsonl`
 - `tool_results.jsonl`
 - `literature_evidence.jsonl`
-- `ledgers/*.json`
+- `ledgers/*.json` with `evidence_graph`
 
-External tool logs are quiet by default. MMseqs stdout and stderr are captured under `runtime.log_dir`, and successful homology summaries include a `tool_trace` with log paths. If MMseqs fails, the CLI reports the exit code and the captured log paths.
+External tool stdout and stderr are captured under `runtime.log_dir`. When `runtime.progress` is true, long-running tools also emit CLI stderr progress events and heartbeat messages while preserving machine-readable JSON on stdout. The run directory records the same lifecycle events in `agent_events.jsonl`.
 
 ## Current Scope
 
@@ -240,9 +243,11 @@ Implemented in the MVP:
 - Quiet external tool execution with stdout/stderr log artifacts.
 - Deterministic Agent MVP evidence packets and Markdown reports.
 - LLM-backed, replayable Agent loop over read-only evidence using OpenAI-compatible Chat Completions.
-- Candidate-level multi-agent ledger workflow with literature grounding, hypothesis generation, evidence-needs derivation, tool planning, evidence audit, hypothesis revision, and synthesis roles.
+- Candidate-level multi-agent evidence-graph workflow with literature grounding, hypothesis generation, evidence-needs derivation, tool planning, evidence audit, hypothesis revision, and synthesis roles.
 - On-demand InterProScan tool execution in the team workflow.
 - Candidate-protein MMseqs tool execution in the team workflow.
+- YAML tool manifest with cost-aware tool planning.
+- Runtime progress and JSONL event logs for long-running agent tools.
 - Europe PMC + PubMed literature evidence aggregation for team reasoning.
 - Centralized YAML prompt packs under `prompts/agent/`.
 - Fixture-based tests that do not require the large NFS databases.
@@ -250,4 +255,4 @@ Implemented in the MVP:
 Not implemented yet:
 
 - Dynamic tool generation.
-- Full evidence graph and final discovery reports.
+- Cross-candidate evidence graph database.

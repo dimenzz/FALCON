@@ -122,6 +122,9 @@ def _build_overrides(
     team_prompt_dir: Path | None = None,
     team_schema_retries: int | None = None,
     team_ledger_dir: Path | None = None,
+    tool_manifest: Path | None = None,
+    resume: bool | None = None,
+    max_expensive_tools_per_candidate: int | None = None,
     literature_max_results: int | None = None,
     agent_mmseqs_max_hits: int | None = None,
     llm_mode: LLMMode | None = None,
@@ -133,6 +136,8 @@ def _build_overrides(
     prompt_pack: Path | None = None,
     max_iterations: int | None = None,
     replay_path: Path | None = None,
+    progress: bool | None = None,
+    heartbeat_seconds: int | None = None,
 ) -> dict[str, Any]:
     return _compact_mapping(
         {
@@ -191,6 +196,11 @@ def _build_overrides(
                     "prompt_dir": _path_value(team_prompt_dir),
                     "schema_retries": team_schema_retries,
                     "ledger_dir": _path_value(team_ledger_dir),
+                    "tool_manifest": _path_value(tool_manifest),
+                    "resume": "skip_completed" if resume is True else ("off" if resume is False else None),
+                    "tool_budget": {
+                        "max_expensive_tools_per_candidate": max_expensive_tools_per_candidate,
+                    },
                 },
                 "tools": {
                     "mmseqs": {
@@ -211,6 +221,10 @@ def _build_overrides(
                     "max_iterations": max_iterations,
                     "replay_path": _path_value(replay_path),
                 },
+            },
+            "runtime": {
+                "progress": progress,
+                "heartbeat_seconds": heartbeat_seconds,
             },
         }
     )
@@ -263,6 +277,11 @@ def show_config(
     team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir")] = None,
     team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries")] = None,
     team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir")] = None,
+    tool_manifest: Annotated[Path | None, typer.Option("--tool-manifest")] = None,
+    resume: Annotated[bool | None, typer.Option("--resume/--no-resume")] = None,
+    max_expensive_tools_per_candidate: Annotated[
+        int | None, typer.Option("--max-expensive-tools-per-candidate")
+    ] = None,
     literature_max_results: Annotated[int | None, typer.Option("--literature-max-results")] = None,
     agent_mmseqs_max_hits: Annotated[int | None, typer.Option("--agent-mmseqs-max-hits")] = None,
     llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
@@ -274,6 +293,8 @@ def show_config(
     prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
     max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
     replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
+    progress: Annotated[bool | None, typer.Option("--progress/--quiet")] = None,
+    heartbeat_seconds: Annotated[int | None, typer.Option("--heartbeat-seconds")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
     config = load_config(
@@ -316,6 +337,9 @@ def show_config(
             team_prompt_dir=team_prompt_dir,
             team_schema_retries=team_schema_retries,
             team_ledger_dir=team_ledger_dir,
+            tool_manifest=tool_manifest,
+            resume=resume,
+            max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
             literature_max_results=literature_max_results,
             agent_mmseqs_max_hits=agent_mmseqs_max_hits,
             llm_mode=llm_mode,
@@ -327,6 +351,8 @@ def show_config(
             prompt_pack=prompt_pack,
             max_iterations=max_iterations,
             replay_path=replay_path,
+            progress=progress,
+            heartbeat_seconds=heartbeat_seconds,
         ),
     )
     _emit(config, output)
@@ -708,6 +734,11 @@ def agent_reason(
     team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir")] = None,
     team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries")] = None,
     team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir")] = None,
+    tool_manifest: Annotated[Path | None, typer.Option("--tool-manifest")] = None,
+    resume: Annotated[bool | None, typer.Option("--resume/--no-resume")] = None,
+    max_expensive_tools_per_candidate: Annotated[
+        int | None, typer.Option("--max-expensive-tools-per-candidate")
+    ] = None,
     literature_max_results: Annotated[int | None, typer.Option("--literature-max-results")] = None,
     agent_mmseqs_max_hits: Annotated[int | None, typer.Option("--agent-mmseqs-max-hits")] = None,
     llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
@@ -719,6 +750,8 @@ def agent_reason(
     prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
     max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
     replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
+    progress: Annotated[bool | None, typer.Option("--progress/--quiet")] = None,
+    heartbeat_seconds: Annotated[int | None, typer.Option("--heartbeat-seconds")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
     config = load_config(
@@ -738,6 +771,9 @@ def agent_reason(
             team_prompt_dir=team_prompt_dir,
             team_schema_retries=team_schema_retries,
             team_ledger_dir=team_ledger_dir,
+            tool_manifest=tool_manifest,
+            resume=resume,
+            max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
             literature_max_results=literature_max_results,
             agent_mmseqs_max_hits=agent_mmseqs_max_hits,
             llm_mode=llm_mode,
@@ -749,6 +785,8 @@ def agent_reason(
             prompt_pack=prompt_pack,
             max_iterations=max_iterations,
             replay_path=replay_path,
+            progress=progress,
+            heartbeat_seconds=heartbeat_seconds,
         ),
     )
     output_dir = out_dir or _default_run_dir(config, "agent")
@@ -773,6 +811,11 @@ def agent_reason(
             team_prompt_dir=config["agent"]["team"].get("prompt_dir"),
             team_schema_retries=int(config["agent"]["team"]["schema_retries"]),
             team_ledger_dir=config["agent"]["team"]["ledger_dir"],
+            tool_manifest_path=config["agent"]["team"].get("tool_manifest"),
+            team_resume=str(config["agent"]["team"].get("resume", "skip_completed")),
+            max_expensive_tools_per_candidate=config["agent"]["team"]
+            .get("tool_budget", {})
+            .get("max_expensive_tools_per_candidate"),
             literature_max_results=int(config["agent"]["literature"]["max_results_per_source"]),
             interproscan_policy=str(config["agent"]["tools"]["interproscan"]["policy"]),
             interproscan_path=config["tools"].get("interproscan"),
@@ -785,6 +828,9 @@ def agent_reason(
             mmseqs_max_hits=int(config["agent"]["tools"]["mmseqs"]["max_hits"]),
             mmseqs_threads=int(config["homology"]["threads"]),
             log_dir=config["runtime"]["log_dir"],
+            progress=bool(config["runtime"].get("progress", True)),
+            heartbeat_seconds=int(config["runtime"].get("heartbeat_seconds", 30)),
+            event_log=config["runtime"].get("event_log", "agent_events.jsonl"),
             llm_model_name=config["agent"]["llm"].get("model_name"),
             llm_base_url=config["agent"]["llm"].get("base_url"),
             llm_api_key_env=str(config["agent"]["llm"]["api_key_env"]),

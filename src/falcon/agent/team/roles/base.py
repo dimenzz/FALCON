@@ -32,6 +32,7 @@ class RoleRunner:
         candidate_slug: str,
         schema_retries: int,
         role_calls: list[dict[str, Any]],
+        event_logger: Any | None = None,
     ) -> None:
         self.provider = provider
         self.role_instructions = role_instructions
@@ -39,6 +40,7 @@ class RoleRunner:
         self.candidate_slug = candidate_slug
         self.schema_retries = max(0, int(schema_retries))
         self.role_calls = role_calls
+        self.event_logger = event_logger
 
     def call(
         self,
@@ -54,6 +56,7 @@ class RoleRunner:
         ]
         last_error = ""
         for attempt in range(1, self.schema_retries + 2):
+            self._emit_event("role_started", role=trace_role, attempt=attempt)
             response = self.provider.complete(
                 messages,
                 metadata={
@@ -97,6 +100,7 @@ class RoleRunner:
                         },
                     ]
                     continue
+                self._emit_event("role_failed", role=trace_role, attempt=attempt, error=last_error)
                 raise RoleOutputError(trace_role, attempt, last_error) from exc
 
             self.role_calls.append(
@@ -113,8 +117,19 @@ class RoleRunner:
                     validation_error=None,
                 )
             )
+            self._emit_event("role_finished", role=trace_role, attempt=attempt)
             return model
         raise RoleOutputError(trace_role, self.schema_retries + 1, last_error)
+
+    def _emit_event(self, event: str, **payload: Any) -> None:
+        if self.event_logger is None:
+            return
+        self.event_logger.emit(
+            event,
+            candidate_index=self.candidate_index,
+            candidate_slug=self.candidate_slug,
+            **payload,
+        )
 
 
 def _role_record(

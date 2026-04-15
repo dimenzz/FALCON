@@ -74,10 +74,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "include_sequences": False,
         "flank_bp": 0,
         "team": {
+            "engine": "orchestrated",
             "max_rounds": 2,
             "prompt_dir": "prompts/agent/team",
             "schema_retries": 2,
             "ledger_dir": "ledgers",
+            "tool_manifest": "configs/tool_manifest.yaml",
+            "resume": "skip_completed",
+            "tool_budget": {
+                "max_expensive_tools_per_candidate": None,
+            },
         },
         "tools": {
             "interproscan": {
@@ -110,6 +116,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "log_dir": "logs",
         "tool_log_mode": "quiet",
         "runs_dir": "runs",
+        "progress": True,
+        "heartbeat_seconds": 30,
+        "event_log": "agent_events.jsonl",
     },
 }
 

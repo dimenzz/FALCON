@@ -1,0 +1,81 @@
+tools:
+  - id: search_literature
+    runner: search_literature
+    description: Search configured literature sources for prior biological knowledge and terminology constraints.
+    evidence_type: literature
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema:
+      query: string
+      max_results: integer optional
+    output_schema:
+      records: list of normalized literature records
+    when_to_use:
+      - The candidate hypothesis needs literature grounding or terminology constraints.
+    when_not_to_use:
+      - The same query has already been searched and returned sufficient records.
+  - id: inspect_context
+    runner: inspect_context
+    description: Return occurrence-level context examples already present in the evidence packet.
+    evidence_type: occurrence_context
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema:
+      protein_id: string optional
+    output_schema:
+      examples: list of occurrence context examples
+    when_to_use:
+      - A hypothesis depends on genomic neighborhood structure or relative gene position.
+    when_not_to_use:
+      - The relevant occurrence examples are already present in the context pack.
+  - id: summarize_annotations
+    runner: summarize_annotations
+    description: Summarize candidate-neighbor annotations from hydrated occurrence examples.
+    evidence_type: annotation_summary
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema: {}
+    output_schema:
+      annotations: list of candidate-neighbor annotation summaries
+    when_to_use:
+      - The agent needs a compact view of candidate protein annotations across examples.
+    when_not_to_use:
+      - The needed candidate annotations are already explicit in the evidence graph.
+  - id: run_interproscan
+    runner: run_interproscan
+    description: Run InterProScan on the representative candidate-neighbor protein sequence.
+    evidence_type: candidate_domain_annotation
+    cost_tier: expensive
+    estimated_runtime: minutes
+    enabled: true
+    input_schema:
+      protein_id: string optional
+      force: boolean optional
+    output_schema:
+      trace: external command trace
+      domains: tool-specific domain output optional
+    when_to_use:
+      - Candidate-level domain evidence is missing or existing annotations need direct verification.
+    when_not_to_use:
+      - Existing candidate Pfam or InterPro annotations already resolve the evidence need.
+  - id: run_candidate_mmseqs
+    runner: run_candidate_mmseqs
+    description: Search the representative candidate-neighbor protein against the configured MMseqs database.
+    evidence_type: candidate_homology
+    cost_tier: expensive
+    estimated_runtime: minutes
+    enabled: true
+    input_schema:
+      protein_id: string optional
+      max_hits: integer optional
+      search_level: integer optional
+    output_schema:
+      hits: list of parsed MMseqs hits
+      trace: external command trace
+    when_to_use:
+      - Candidate-level homology evidence is necessary and not already available.
+    when_not_to_use:
+      - The candidate sequence is unavailable or equivalent homology evidence already exists.

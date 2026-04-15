@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from falcon.literature.search import LiteratureClient, StaticLiteratureClient
+from falcon.tools.manifest import ToolManifest, default_tool_manifest
 
 
 AgentToolRunner = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -24,12 +25,18 @@ class EvidenceToolExecutor:
         literature_client: LiteratureClient | None = None,
         interproscan_runner: AgentToolRunner | None = None,
         mmseqs_runner: AgentToolRunner | None = None,
+        tool_manifest: ToolManifest | None = None,
+        max_expensive_tools_per_candidate: int | None = None,
+        event_logger: Any | None = None,
         literature_max_results: int = 5,
         interproscan_policy: str = "on_demand",
     ) -> None:
         self.literature_client = literature_client or StaticLiteratureClient([])
         self.interproscan_runner = interproscan_runner
         self.mmseqs_runner = mmseqs_runner
+        self.tool_manifest = tool_manifest or default_tool_manifest()
+        self.max_expensive_tools_per_candidate = max_expensive_tools_per_candidate
+        self.event_logger = event_logger
         self.literature_max_results = int(literature_max_results)
         self.interproscan_policy = interproscan_policy
 
@@ -37,26 +44,55 @@ class EvidenceToolExecutor:
         self,
         requests: list[dict[str, Any]],
         evidence: dict[str, Any],
+        *,
+        event_context: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         results = []
         literature_records = []
+        expensive_tools_used = 0
         for request in requests:
             tool = request.get("tool")
-            if tool == "search_literature":
-                result = self._search_literature(request)
-                literature_records.extend(result.get("records", []))
-            elif tool == "inspect_context":
-                result = self._inspect_context(request, evidence)
-            elif tool == "summarize_annotations":
-                result = self._summarize_annotations(request, evidence)
-            elif tool == "run_interproscan":
-                result = self._run_interproscan(request, evidence)
-            elif tool == "run_candidate_mmseqs":
-                result = self._run_candidate_mmseqs(request, evidence)
+            spec = self.tool_manifest.get(str(tool)) if tool else None
+            if spec is None:
+                result = {"tool": tool, "status": "rejected", "reason": "tool is not in manifest"}
+            elif not spec.enabled:
+                result = {"tool": tool, "status": "skipped", "reason": "tool is disabled by manifest"}
+            elif (
+                spec.cost_tier == "expensive"
+                and self.max_expensive_tools_per_candidate is not None
+                and expensive_tools_used >= int(self.max_expensive_tools_per_candidate)
+            ):
+                result = {"tool": tool, "status": "deferred", "reason": "expensive tool budget exhausted"}
             else:
-                result = {"tool": tool, "status": "rejected", "reason": "tool is not allowlisted"}
+                if spec.cost_tier == "expensive":
+                    expensive_tools_used += 1
+                self._emit_event("tool_started", tool=str(tool), event_context=event_context)
+                if tool == "search_literature":
+                    result = self._search_literature(request)
+                    literature_records.extend(result.get("records", []))
+                elif tool == "inspect_context":
+                    result = self._inspect_context(request, evidence)
+                elif tool == "summarize_annotations":
+                    result = self._summarize_annotations(request, evidence)
+                elif tool == "run_interproscan":
+                    result = self._run_interproscan(request, evidence)
+                elif tool == "run_candidate_mmseqs":
+                    result = self._run_candidate_mmseqs(request, evidence)
+                else:
+                    result = {"tool": tool, "status": "rejected", "reason": "tool runner is not implemented"}
+                self._emit_event(
+                    "tool_finished",
+                    tool=str(tool),
+                    event_context=event_context,
+                    status=str(result.get("status")),
+                )
             results.append(result)
         return results, literature_records
+
+    def _emit_event(self, event: str, *, tool: str, event_context: dict[str, Any] | None, **payload: Any) -> None:
+        if self.event_logger is None:
+            return
+        self.event_logger.emit(event, **(event_context or {}), tool=tool, **payload)
 
     def _search_literature(self, request: dict[str, Any]) -> dict[str, Any]:
         parameters = _parameters(request)
@@ -176,6 +212,8 @@ def build_interproscan_runner(
     threads: int,
     output_dir: Path | str,
     log_dir: Path | str,
+    event_logger: Any | None = None,
+    heartbeat_seconds: float | None = None,
 ) -> AgentToolRunner | None:
     if interproscan_path is None:
         return None
@@ -198,7 +236,14 @@ def build_interproscan_runner(
             output_dir=tool_dir,
             threads=threads,
         )
-        trace = run_external_command(command=command, log_dir=log_dir, label=f"interproscan-{safe_id}")
+        trace = run_external_command(
+            command=command,
+            log_dir=log_dir,
+            label=f"interproscan-{safe_id}",
+            event_logger=event_logger,
+            heartbeat_seconds=heartbeat_seconds,
+            event_context={"tool": "run_interproscan", "protein_id": protein_id},
+        )
         return {
             "tool": "run_interproscan",
             "status": "ok",
@@ -221,6 +266,8 @@ def build_candidate_mmseqs_runner(
     evalue: float,
     max_hits: int,
     threads: int,
+    event_logger: Any | None = None,
+    heartbeat_seconds: float | None = None,
 ) -> AgentToolRunner | None:
     if mmseqs_path is None or mmseqs_db_root is None:
         return None
@@ -251,6 +298,9 @@ def build_candidate_mmseqs_runner(
             max_seqs=limit,
             threads=threads,
             log_dir=log_dir,
+            event_logger=event_logger,
+            heartbeat_seconds=heartbeat_seconds,
+            event_context={"tool": "run_candidate_mmseqs", "protein_id": protein_id},
         )
         hits = [hit.to_dict() for hit in parse_hits_tsv(raw_hits, search_level=level)[:limit]]
         return {
