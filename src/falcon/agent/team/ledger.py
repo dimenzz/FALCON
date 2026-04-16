@@ -28,13 +28,22 @@ def initialize_ledger(
             "queries": [],
             "records": [],
             "brief": {},
+            "scoped_summaries": [],
             "failed_queries": [],
+        },
+        "family_naming": {
+            "accession_records": [],
+            "aggregated_terms": [],
+            "selection": {},
         },
         "hypotheses": [],
         "falsification_tests": [],
         "evidence_needs": [],
         "tool_plan": [],
+        "tool_plan_validations": [],
         "tool_observations": [],
+        "tool_summaries": [],
+        "dynamic_tools": [],
         "audit": {"findings": []},
         "revisions": [],
         "contradiction_ledger": [],
@@ -56,6 +65,21 @@ def add_literature_records(ledger: CandidateLedger, records: list[dict[str, Any]
     ledger["evidence_graph"] = graph.to_dict()
 
 
+def add_literature_summary_nodes(ledger: CandidateLedger, summaries: list[dict[str, Any]], *, created_by: str) -> None:
+    graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
+    for summary in summaries:
+        node_id = graph.add_node("literature_summary", dict(summary), created_by=created_by)
+        _link_to_candidate(graph, node_id, created_by=created_by)
+    ledger["evidence_graph"] = graph.to_dict()
+
+
+def add_family_selection_node(ledger: CandidateLedger, family_naming: dict[str, Any], *, created_by: str) -> None:
+    graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
+    node_id = graph.add_node("family_term_selection", dict(family_naming), created_by=created_by)
+    _link_to_candidate(graph, node_id, created_by=created_by)
+    ledger["evidence_graph"] = graph.to_dict()
+
+
 def add_tool_observations(ledger: CandidateLedger, observations: list[dict[str, Any]]) -> None:
     graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
     for observation in observations:
@@ -64,7 +88,12 @@ def add_tool_observations(ledger: CandidateLedger, observations: list[dict[str, 
             payload["evidence_ref"] = f"TOOL:{payload.get('tool', 'unknown')}:{len(ledger['tool_observations']) + 1}"
         ledger["tool_observations"].append(payload)
         node_id = graph.add_node("tool_observation", payload, created_by="tool_scheduler")
-        _link_to_candidate(graph, node_id, created_by="tool_scheduler")
+        payload["observation_id"] = node_id
+        request_id = str(payload.get("request_id") or "").strip()
+        if request_id and _node_exists(graph, request_id):
+            graph.add_edge(node_id, request_id, "response_to", created_by="tool_scheduler")
+        else:
+            _link_to_candidate(graph, node_id, created_by="tool_scheduler")
     ledger["evidence_graph"] = graph.to_dict()
 
 
@@ -110,7 +139,60 @@ def add_tool_request_nodes(ledger: CandidateLedger, requests: list[dict[str, Any
     graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
     for request in requests:
         node_id = graph.add_node("tool_request", request, created_by=created_by)
-        _link_to_candidate(graph, node_id, created_by=created_by)
+        request["request_id"] = node_id
+        need_id = str(request.get("evidence_need_id") or "").strip()
+        if need_id:
+            _link_to_need(graph, node_id, need_id, "requested_for", created_by=created_by)
+        else:
+            _link_to_candidate(graph, node_id, created_by=created_by)
+    ledger["evidence_graph"] = graph.to_dict()
+
+
+def add_tool_summary_nodes(ledger: CandidateLedger, summaries: list[dict[str, Any]], *, created_by: str) -> None:
+    graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
+    for summary in summaries:
+        payload = dict(summary)
+        ledger["tool_summaries"].append(payload)
+        node_id = graph.add_node("tool_summary", payload, created_by=created_by)
+        raw_ref = str(payload.get("raw_observation_ref") or "").strip()
+        raw_node_id = _node_id_by_payload_field(graph, "tool_observation", "evidence_ref", raw_ref) if raw_ref else None
+        if raw_node_id:
+            graph.add_edge(node_id, raw_node_id, "derived_from", created_by=created_by)
+        for evidence_need_id in payload.get("addresses") or []:
+            _link_to_need(graph, node_id, str(evidence_need_id), "addresses", created_by=created_by)
+        if not raw_node_id and not payload.get("addresses"):
+            _link_to_candidate(graph, node_id, created_by=created_by)
+    ledger["evidence_graph"] = graph.to_dict()
+
+
+def add_tool_plan_validation_nodes(
+    ledger: CandidateLedger,
+    validations: list[dict[str, Any]],
+    *,
+    created_by: str,
+) -> None:
+    graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
+    for validation in validations:
+        payload = dict(validation)
+        ledger["tool_plan_validations"].append(payload)
+        node_id = graph.add_node("tool_plan_validation", payload, created_by=created_by)
+        _link_to_test(graph, node_id, str(payload.get("evidence_need_id") or ""), "validates", created_by=created_by)
+    ledger["evidence_graph"] = graph.to_dict()
+
+
+def add_dynamic_tool_nodes(
+    ledger: CandidateLedger,
+    records: list[dict[str, Any]],
+    *,
+    created_by: str,
+) -> None:
+    graph = EvidenceGraph.from_dict(ledger.get("evidence_graph"))
+    for record in records:
+        payload = dict(record)
+        ledger["dynamic_tools"].append(payload)
+        node_type = str(payload.get("node_type") or "dynamic_tool_result")
+        node_id = graph.add_node(node_type, payload, created_by=created_by)
+        _link_to_test(graph, node_id, str(payload.get("evidence_need_id") or ""), "derived_from", created_by=created_by)
     ledger["evidence_graph"] = graph.to_dict()
 
 
@@ -159,6 +241,14 @@ def _link_to_test(graph: EvidenceGraph, source: str, test_id: str, edge_type: st
         graph.add_edge(source, target, edge_type, created_by=created_by)
 
 
+def _link_to_need(graph: EvidenceGraph, source: str, need_id: str, edge_type: str, *, created_by: str) -> None:
+    target = _node_id_by_payload_id(graph, "evidence_need", need_id)
+    if target is None:
+        target = _node_id_by_payload_field(graph, "evidence_need", "test_id", need_id)
+    if target:
+        graph.add_edge(source, target, edge_type, created_by=created_by)
+
+
 def _first_node_id(graph: EvidenceGraph, node_type: str) -> str | None:
     for node in graph.nodes:
         if node.get("type") == node_type:
@@ -174,3 +264,17 @@ def _node_id_by_payload_id(graph: EvidenceGraph, node_type: str, payload_id: str
         if str(payload.get("id") or "") == payload_id:
             return str(node.get("id"))
     return None
+
+
+def _node_id_by_payload_field(graph: EvidenceGraph, node_type: str, field: str, value: str) -> str | None:
+    for node in graph.nodes:
+        if node.get("type") != node_type:
+            continue
+        payload = node.get("payload") or {}
+        if str(payload.get(field) or "") == value:
+            return str(node.get("id"))
+    return None
+
+
+def _node_exists(graph: EvidenceGraph, node_id: str) -> bool:
+    return any(str(node.get("id")) == node_id for node in graph.nodes)

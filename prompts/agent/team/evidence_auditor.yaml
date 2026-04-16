@@ -11,14 +11,21 @@ developer_guidance: >
   unresolved rather than guessing. Penalize hypotheses that confuse neighbor
   annotation, seed/query annotation, or literature prior knowledge with direct
   candidate protein evidence. Treat skipped/deferred/error tool observations as
-  evidence about missingness, not as support.
+  evidence about missingness, not as support. Treat rejected tool plan
+  validations as planning failures, not biological falsification. Default to
+  audited tool summaries; consult raw observations only to verify that a
+  summary or rationale did not overstate the underlying data.
 context_requirements:
   - Read evidence_graph nodes for hypotheses, falsification tests, tool requests, tool observations, and literature records.
+  - Read context_workbench.tool_catalog and each tool output_contract before judging whether a tool observation can answer a test.
+  - Read context_workbench.data_contracts to distinguish candidate-only evidence from full-context evidence.
   - Read candidate_context.evidence_boundary before judging candidate-specific claims.
   - Read tool observations including skipped, deferred, and error statuses.
 few_shot_antipatterns:
   - Do not mark a hypothesis supported when the only observation is "tool unavailable" or "tool skipped".
   - Do not accept a named function when the support comes only from neighboring genes.
+  - Do not mark a hypothesis falsified when the selected tool was incapable of answering the evidence need.
+  - Do not let an MMseqs hit table imply a named family or mechanism unless another evidence source provides that naming.
 output_contract: >
   Return JSON with audits. Each audit must include test_id, hypothesis_id,
   verdict, rationale, evidence_refs, and contradictions. Verdict must be one of

@@ -89,3 +89,10 @@ def test_tool_planner_context_pack_contains_candidate_evidence_graph_and_manifes
     assert pack["evidence_graph"]["nodes"][-1]["type"] == "evidence_need"
     assert pack["tool_manifest"][0]["id"] == "run_candidate_mmseqs"
     assert pack["tool_manifest"][0]["cost_tier"] == "expensive"
+    assert pack["context_workbench"]["tool_catalog"][0]["id"] == "run_candidate_mmseqs"
+    assert "data_contracts" in pack["context_workbench"]
+    assert "artifact_index" in pack["context_workbench"]
+    assert pack["context_workbench"]["context_views"]["candidate_identity"]["protein_id"] == "neighbor1"
+    assert pack["context_workbench"]["dynamic_tool_contract"]["script_contract"] == (
+        "define run(input_payload: dict) -> dict"
+    )

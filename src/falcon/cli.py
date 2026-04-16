@@ -125,6 +125,8 @@ def _build_overrides(
     tool_manifest: Path | None = None,
     resume: bool | None = None,
     max_expensive_tools_per_candidate: int | None = None,
+    dynamic_tools: bool | None = None,
+    dynamic_tool_timeout: int | None = None,
     literature_max_results: int | None = None,
     agent_mmseqs_max_hits: int | None = None,
     llm_mode: LLMMode | None = None,
@@ -207,6 +209,10 @@ def _build_overrides(
                         "max_hits": agent_mmseqs_max_hits,
                     },
                 },
+                "dynamic_tools": {
+                    "enabled": dynamic_tools,
+                    "timeout_seconds": dynamic_tool_timeout,
+                },
                 "literature": {
                     "max_results_per_source": literature_max_results,
                 },
@@ -282,6 +288,8 @@ def show_config(
     max_expensive_tools_per_candidate: Annotated[
         int | None, typer.Option("--max-expensive-tools-per-candidate")
     ] = None,
+    dynamic_tools: Annotated[bool | None, typer.Option("--dynamic-tools/--no-dynamic-tools")] = None,
+    dynamic_tool_timeout: Annotated[int | None, typer.Option("--dynamic-tool-timeout")] = None,
     literature_max_results: Annotated[int | None, typer.Option("--literature-max-results")] = None,
     agent_mmseqs_max_hits: Annotated[int | None, typer.Option("--agent-mmseqs-max-hits")] = None,
     llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
@@ -340,6 +348,8 @@ def show_config(
             tool_manifest=tool_manifest,
             resume=resume,
             max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
+            dynamic_tools=dynamic_tools,
+            dynamic_tool_timeout=dynamic_tool_timeout,
             literature_max_results=literature_max_results,
             agent_mmseqs_max_hits=agent_mmseqs_max_hits,
             llm_mode=llm_mode,
@@ -739,6 +749,8 @@ def agent_reason(
     max_expensive_tools_per_candidate: Annotated[
         int | None, typer.Option("--max-expensive-tools-per-candidate")
     ] = None,
+    dynamic_tools: Annotated[bool | None, typer.Option("--dynamic-tools/--no-dynamic-tools")] = None,
+    dynamic_tool_timeout: Annotated[int | None, typer.Option("--dynamic-tool-timeout")] = None,
     literature_max_results: Annotated[int | None, typer.Option("--literature-max-results")] = None,
     agent_mmseqs_max_hits: Annotated[int | None, typer.Option("--agent-mmseqs-max-hits")] = None,
     llm_mode: Annotated[LLMMode | None, typer.Option("--llm-mode")] = None,
@@ -774,6 +786,8 @@ def agent_reason(
             tool_manifest=tool_manifest,
             resume=resume,
             max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
+            dynamic_tools=dynamic_tools,
+            dynamic_tool_timeout=dynamic_tool_timeout,
             literature_max_results=literature_max_results,
             agent_mmseqs_max_hits=agent_mmseqs_max_hits,
             llm_mode=llm_mode,
@@ -816,6 +830,10 @@ def agent_reason(
             max_expensive_tools_per_candidate=config["agent"]["team"]
             .get("tool_budget", {})
             .get("max_expensive_tools_per_candidate"),
+            dynamic_tools_enabled=bool(config["agent"].get("dynamic_tools", {}).get("enabled", False)),
+            dynamic_tool_timeout=int(config["agent"].get("dynamic_tools", {}).get("timeout_seconds", 60)),
+            dynamic_tool_allowed_imports=config["agent"].get("dynamic_tools", {}).get("allowed_imports", []),
+            accession_cache_dir=config["runtime"]["cache_dir"],
             literature_max_results=int(config["agent"]["literature"]["max_results_per_source"]),
             interproscan_policy=str(config["agent"]["tools"]["interproscan"]["policy"]),
             interproscan_path=config["tools"].get("interproscan"),

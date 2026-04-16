@@ -11,10 +11,20 @@ tools:
       max_results: integer optional
     output_schema:
       records: list of normalized literature records
+    answers:
+      - published background knowledge, terminology, and known biological constraints
+    cannot_answer:
+      - candidate-specific function
+      - local genomic context
+      - sequence motif conservation
+    output_contract:
+      records: normalized literature records with provenance
+    evidence_granularity: literature
     when_to_use:
       - The candidate hypothesis needs literature grounding or terminology constraints.
     when_not_to_use:
       - The same query has already been searched and returned sufficient records.
+
   - id: inspect_context
     runner: inspect_context
     description: Return occurrence-level context examples already present in the evidence packet.
@@ -26,10 +36,22 @@ tools:
       protein_id: string optional
     output_schema:
       examples: list of occurrence context examples
+    answers:
+      - raw occurrence-level genomic context already present in the evidence packet
+    cannot_answer:
+      - candidate sequence motifs
+      - new homology search
+      - literature support
+    required_artifacts:
+      - occurrence_examples
+    output_contract:
+      examples: full hydrated occurrence context examples
+    evidence_granularity: occurrence_context
     when_to_use:
       - A hypothesis depends on genomic neighborhood structure or relative gene position.
     when_not_to_use:
       - The relevant occurrence examples are already present in the context pack.
+
   - id: summarize_annotations
     runner: summarize_annotations
     description: Summarize candidate-neighbor annotations from hydrated occurrence examples.
@@ -40,10 +62,114 @@ tools:
     input_schema: {}
     output_schema:
       annotations: list of candidate-neighbor annotation summaries
+    answers:
+      - candidate neighbor annotation summary across occurrence examples
+    cannot_answer:
+      - full genomic context feature presence
+      - whether another neighboring protein such as Cas2 exists in the context
+      - candidate sequence motif conservation
+    required_artifacts:
+      - occurrence_examples
+    output_contract:
+      annotations: candidate-neighbor protein annotations only
+    evidence_granularity: candidate_annotation
     when_to_use:
       - The agent needs a compact view of candidate protein annotations across examples.
     when_not_to_use:
       - The needed candidate annotations are already explicit in the evidence graph.
+
+  - id: query_context_features
+    runner: query_context_features
+    description: Search full occurrence-level genomic contexts for proteins matching annotation or cluster patterns.
+    evidence_type: full_context_feature_query
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema:
+      patterns: list of strings
+      fields: list of annotation fields optional
+    output_schema:
+      matches: list of occurrence context matches
+      summary: match counts
+    answers:
+      - full genomic context feature presence
+      - whether a neighboring protein such as Cas2 exists in the context
+      - relative position of matching context proteins
+    cannot_answer:
+      - candidate sequence motif conservation
+      - new homology search
+      - literature support
+    required_artifacts:
+      - occurrence_context
+    output_contract:
+      matches: per-example proteins matching requested annotation or cluster patterns
+    evidence_granularity: full_occurrence_context
+    when_to_use:
+      - A falsification test asks whether a specific protein family, annotation, cluster, or neighbor exists in the full context.
+    when_not_to_use:
+      - The question is only about the candidate protein's own annotation.
+
+  - id: check_candidate_motifs
+    runner: check_candidate_motifs
+    description: Check candidate protein sequence for explicit residue or regex motif patterns.
+    evidence_type: candidate_motif_scan
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema:
+      motifs: list of {id, pattern} regex motifs
+    output_schema:
+      motifs: list of motif match reports
+    answers:
+      - candidate sequence motif presence
+      - explicit residue pattern presence
+    cannot_answer:
+      - structural conservation without a provided motif
+      - literature support
+      - genomic context
+    required_artifacts:
+      - candidate_protein_sequence
+    output_contract:
+      motifs: regex match positions using 1-based coordinates
+    evidence_granularity: candidate_sequence
+    supports_dynamic_fallback: true
+    when_to_use:
+      - The evidence need names explicit residue or motif patterns to check in the candidate sequence.
+    when_not_to_use:
+      - No candidate protein sequence is available or the needed motif is not specified.
+
+  - id: local_sequence_architecture_probe
+    runner: local_sequence_architecture_probe
+    description: Scan the local DNA sequence window around the candidate for repeat-structure features.
+    evidence_type: local_sequence_architecture
+    cost_tier: cheap
+    estimated_runtime: seconds
+    enabled: true
+    input_schema:
+      min_repeat_unit_length: integer optional
+      max_repeat_unit_length: integer optional
+      min_copy_count: integer optional
+    output_schema:
+      features: list of repeat-structure features
+      summary: boolean and count summary
+    answers:
+      - repeat structure facts in the local DNA window
+      - repeat count summary
+    cannot_answer:
+      - candidate protein family naming
+      - literature support
+      - specific biological role labels
+    required_artifacts:
+      - candidate_dna_sequence
+    output_contract:
+      features: repeat-structure inventory with coordinates and unit snippets
+      summary: boolean and count summary without biological labels
+    evidence_granularity: candidate_local_dna_window
+    when_to_use:
+      - A hypothesis predicts informative repeat structure in the local locus DNA.
+    when_not_to_use:
+      - No DNA sequence is available for the candidate-centered window.
+
   - id: run_interproscan
     runner: run_interproscan
     description: Run InterProScan on the representative candidate-neighbor protein sequence.
@@ -56,11 +182,24 @@ tools:
       force: boolean optional
     output_schema:
       trace: external command trace
-      domains: tool-specific domain output optional
+      domains: parsed InterProScan records when available
+    answers:
+      - candidate domain annotation
+      - InterPro/Pfam signature evidence for the candidate sequence
+    cannot_answer:
+      - full genomic context feature presence
+      - literature support
+    required_artifacts:
+      - candidate_protein_sequence
+    output_contract:
+      trace: external command trace
+      domains: parsed InterProScan records when available
+    evidence_granularity: candidate_sequence
     when_to_use:
       - Candidate-level domain evidence is missing or existing annotations need direct verification.
     when_not_to_use:
       - Existing candidate Pfam or InterPro annotations already resolve the evidence need.
+
   - id: run_candidate_mmseqs
     runner: run_candidate_mmseqs
     description: Search the representative candidate-neighbor protein against the configured MMseqs database.
@@ -75,6 +214,20 @@ tools:
     output_schema:
       hits: list of parsed MMseqs hits
       trace: external command trace
+    answers:
+      - candidate homology hit table
+      - candidate sequence similarity to database representatives
+    cannot_answer:
+      - conserved residue
+      - catalytic motif
+      - full genomic context feature presence
+      - whether a neighboring protein such as Cas2 exists in the context
+    required_artifacts:
+      - candidate_protein_sequence
+    output_contract:
+      hits: parsed MMseqs hits without residue-level motif calls
+      trace: external command trace
+    evidence_granularity: candidate_sequence
     when_to_use:
       - Candidate-level homology evidence is necessary and not already available.
     when_not_to_use:

@@ -25,6 +25,30 @@ def render_agent_report(result: dict[str, Any]) -> str:
         f"- DNA sequence available: {sequence['dna']['available']}",
         "",
     ]
+    supported_claim = reasoning.get("supported_claim") or {}
+    if supported_claim:
+        lines.extend(["## Supported Claim", ""])
+        lines.append(f"- Label: {supported_claim.get('label', '')}")
+        if supported_claim.get("evidence_refs"):
+            lines.append(f"- Evidence refs: {', '.join(supported_claim.get('evidence_refs', []))}")
+        lines.append("")
+
+    working_hypotheses = reasoning.get("working_hypotheses") or []
+    if working_hypotheses:
+        lines.extend(["## Working Mechanistic Hypotheses", ""])
+        for hypothesis in working_hypotheses:
+            lines.append(
+                f"- {hypothesis.get('id')}: {hypothesis.get('mechanistic_label')} ({hypothesis.get('status', 'active')})"
+            )
+        lines.append("")
+
+    next_evidence_plan = reasoning.get("next_evidence_plan") or []
+    if next_evidence_plan:
+        lines.extend(["## Next Evidence Collection Plan", ""])
+        for item in next_evidence_plan:
+            lines.append(f"- {item}")
+        lines.append("")
+
     if reasoning.get("evidence"):
         lines.extend(["## Reasoning Evidence", ""])
         for evidence in reasoning["evidence"]:
@@ -85,11 +109,23 @@ def render_agent_report(result: dict[str, Any]) -> str:
         lines.append("")
 
         lines.extend(["## Audit and Revision", ""])
+        for validation in ledger.get("tool_plan_validations", []):
+            lines.append(
+                f"- Tool plan {validation.get('tool')} for {validation.get('evidence_need_id')}: "
+                f"{validation.get('status')} - {validation.get('reason')}"
+            )
         for finding in ledger.get("audit", {}).get("findings", []):
             lines.append(
                 f"- {finding.get('test_id')} / {finding.get('hypothesis_id')}: "
                 f"{finding.get('verdict')} - {finding.get('rationale')}"
             )
+        for dynamic_record in ledger.get("dynamic_tools", []):
+            if dynamic_record.get("node_type") == "dynamic_tool_result":
+                result_payload = dynamic_record.get("result") or {}
+                lines.append(
+                    f"- Dynamic tool for {dynamic_record.get('evidence_need_id')}: "
+                    f"{result_payload.get('status')} - {result_payload.get('reason', result_payload.get('tool'))}"
+                )
         for revision in ledger.get("revisions", []):
             for hypothesis in revision.get("revised_hypotheses", []):
                 lines.append(

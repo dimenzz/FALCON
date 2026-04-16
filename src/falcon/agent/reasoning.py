@@ -22,6 +22,8 @@ from falcon.tools.agent_registry import (
     build_candidate_mmseqs_runner,
     build_interproscan_runner,
 )
+from falcon.tools.dynamic import DynamicPythonToolRunner
+from falcon.tools.accession_enrichment import AccessionEnricher
 from falcon.tools.manifest import ToolManifest, load_tool_manifest
 
 
@@ -49,6 +51,10 @@ def reason_candidates(
     tool_manifest_path: Path | str | None = None,
     team_resume: str = "skip_completed",
     max_expensive_tools_per_candidate: int | None = None,
+    dynamic_tools_enabled: bool = False,
+    dynamic_tool_timeout: int = 60,
+    dynamic_tool_allowed_imports: list[str] | None = None,
+    accession_cache_dir: Path | str = "cache",
     literature_max_results: int = 5,
     interproscan_policy: str = "on_demand",
     interproscan_path: Path | str | None = None,
@@ -149,6 +155,17 @@ def reason_candidates(
         literature_max_results=literature_max_results,
         interproscan_policy=interproscan_policy,
     )
+    dynamic_tool_runner = (
+        DynamicPythonToolRunner(
+            output_dir=output_dir / "dynamic_tools",
+            log_dir=log_dir,
+            timeout_seconds=dynamic_tool_timeout,
+            allowed_imports=set(dynamic_tool_allowed_imports) if dynamic_tool_allowed_imports is not None else None,
+        )
+        if dynamic_tools_enabled
+        else None
+    )
+    accession_enricher = AccessionEnricher()
 
     results = []
     with ProteinRepository(proteins_db) as proteins, ClusterRepository(clusters_db) as clusters, SequenceRepository(
@@ -211,6 +228,10 @@ def reason_candidates(
                 tool_manifest=tool_manifest,
                 event_logger=event_logger,
                 tool_executor=tool_executor,
+                dynamic_tools_enabled=dynamic_tools_enabled,
+                dynamic_tool_runner=dynamic_tool_runner,
+                accession_enricher=accession_enricher,
+                accession_cache_dir=str(accession_cache_dir),
             )
             trace_records.extend(result.pop("_agent_trace_records", []))
             call_records.extend(result.pop("_llm_call_records", []))
@@ -288,6 +309,10 @@ def _reason_candidate(
     tool_manifest: ToolManifest,
     event_logger: JsonlEventLogger,
     tool_executor: EvidenceToolExecutor,
+    dynamic_tools_enabled: bool = False,
+    dynamic_tool_runner: DynamicPythonToolRunner | None = None,
+    accession_enricher: AccessionEnricher | None = None,
+    accession_cache_dir: str | None = None,
 ) -> dict[str, Any]:
     examples = []
     uncertainties = []
@@ -344,6 +369,10 @@ def _reason_candidate(
             max_rounds=max_team_rounds,
             prompt_dir=team_prompt_dir,
             schema_retries=team_schema_retries,
+            dynamic_tools_enabled=dynamic_tools_enabled,
+            dynamic_tool_runner=dynamic_tool_runner,
+            accession_enricher=accession_enricher,
+            accession_cache_dir=accession_cache_dir,
         )
         result["reasoning"] = team_result.reasoning
         result["team_trace"] = team_result.team_trace

@@ -93,6 +93,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "max_hits": 25,
             },
         },
+        "dynamic_tools": {
+            "enabled": False,
+            "timeout_seconds": 60,
+            "allowed_imports": [
+                "Bio",
+                "collections",
+                "csv",
+                "itertools",
+                "json",
+                "math",
+                "re",
+                "statistics",
+            ],
+        },
         "literature": {
             "sources": ["europe_pmc", "pubmed"],
             "max_results_per_source": 5,
@@ -121,6 +135,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "event_log": "agent_events.jsonl",
     },
 }
+
+CONFIG_RELATIVE_PATHS: tuple[tuple[str, ...], ...] = (
+    ("data", "proteins_db"),
+    ("data", "clusters_db"),
+    ("data", "genome_manifest"),
+    ("data", "protein_manifest"),
+    ("data", "mmseqs_db_root"),
+    ("tools", "mmseqs"),
+    ("tools", "interproscan"),
+    ("background", "output_dir"),
+    ("agent", "team", "prompt_dir"),
+    ("agent", "team", "tool_manifest"),
+    ("agent", "llm", "prompt_pack"),
+    ("agent", "llm", "replay_path"),
+    ("runtime", "sandbox_dir"),
+    ("runtime", "cache_dir"),
+    ("runtime", "log_dir"),
+    ("runtime", "runs_dir"),
+)
 
 
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -153,7 +186,46 @@ def load_config(
     cli_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = deepcopy(DEFAULT_CONFIG)
-    config = deep_merge(config, load_yaml_config(config_path))
+    yaml_config = load_yaml_config(config_path)
+    if config_path is not None:
+        yaml_config = resolve_config_paths(yaml_config, base_dir=_config_base_dir(Path(config_path)))
+    config = deep_merge(config, yaml_config)
     if cli_overrides:
         config = deep_merge(config, cli_overrides)
     return config
+
+
+def resolve_config_paths(config: Mapping[str, Any], *, base_dir: Path | str) -> dict[str, Any]:
+    resolved = deepcopy(dict(config))
+    base = Path(base_dir)
+    for path_keys in CONFIG_RELATIVE_PATHS:
+        _resolve_path_value(resolved, path_keys, base)
+    return resolved
+
+
+def _resolve_path_value(config: dict[str, Any], path_keys: tuple[str, ...], base_dir: Path) -> None:
+    current: Any = config
+    for key in path_keys[:-1]:
+        if not isinstance(current, dict):
+            return
+        current = current.get(key)
+    if not isinstance(current, dict):
+        return
+    leaf = path_keys[-1]
+    value = current.get(leaf)
+    if not isinstance(value, str) or not value:
+        return
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        current[leaf] = str(path)
+    else:
+        current[leaf] = str((base_dir / path).resolve(strict=False))
+
+
+def _config_base_dir(config_path: Path) -> Path:
+    path = config_path.expanduser().resolve(strict=False)
+    start = path.parent
+    for candidate in (start, *start.parents):
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+    return start

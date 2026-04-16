@@ -8,10 +8,10 @@ FALCON is a falsification-first metagenomic discovery system. Development should
 - Treat `proteins.db` occurrence rows as the canonical source for genomic context and annotations.
 - Treat `clusters.db` as the canonical source for 90% and 30% cluster membership.
 - Do not scatter FASTA path parsing across modules; sequence access must go through the manifest/sequence data layer.
-- Keep deterministic data extraction separate from LLM reasoning. The LLM loop may consume structured evidence packets and request fixed allowlisted tools through the tool registry; it must not execute arbitrary shell commands.
-- Keep the YAML tool manifest and Python tool registry synchronized. Tool ids in prompts, plans, ledgers, and tool observations must come from the manifest; do not hard-code tool preferences in role prompts.
+- Keep deterministic data extraction separate from LLM reasoning. The LLM loop may consume structured evidence packets, request manifest-described tools through the registry, and use reviewed dynamic Python tools only through the controlled runner; it must not execute arbitrary shell commands.
+- Keep the YAML tool manifest and Python tool registry synchronized. Tool ids in prompts, plans, ledgers, and tool observations must come from the manifest/context workbench; do not hard-code tool preferences in role prompts.
 - Keep agent prompts centralized under `prompts/agent/`; do not scatter prompt text across CLI or data modules.
-- Do not add dynamic tool generation or heavy external tool orchestration without a new design pass.
+- Dynamic tool generation must stay opt-in, reviewed, artifact-scoped, and auditable. Generated scripts must use the dynamic tool runner and must not launch nested subprocesses or scan arbitrary filesystem locations.
 - Do not make claims without provenance. Future reports must link conclusions to raw observations, tool calls, and reasoning steps.
 
 ## MVP Boundaries
@@ -28,6 +28,7 @@ FALCON is a falsification-first metagenomic discovery system. Development should
 - Live LLM mode must require an explicit `agent.llm.model_name` from YAML or CLI. Do not guess a default model.
 - LLM loop actions must remain allowlisted and auditable through trace artifacts and per-candidate ledgers.
 - Team workflow prompts should consume structured context packs and evidence graph slices. Do not fall back to dumping raw ledgers or writing role-specific prompt text in orchestration code.
+- Team workflow prompts should describe how to use `context_workbench`; they should not enumerate current fixed tool ids.
 - Runtime progress events should go to stderr and `agent_events.jsonl`; external tool stdout/stderr must remain in tool log files.
 
 ## Cluster Semantics

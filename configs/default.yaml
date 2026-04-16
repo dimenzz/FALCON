@@ -67,11 +67,24 @@ agent:
     prompt_dir: prompts/agent/team
     schema_retries: 2
     ledger_dir: ledgers
+    tool_manifest: configs/tool_manifest.yaml
   tools:
     interproscan:
       policy: on_demand
     mmseqs:
       max_hits: 25
+  dynamic_tools:
+    enabled: true
+    timeout_seconds: 60
+    allowed_imports:
+      - Bio
+      - collections
+      - csv
+      - itertools
+      - json
+      - math
+      - re
+      - statistics
   literature:
     sources:
       - europe_pmc
@@ -84,7 +97,7 @@ agent:
     base_url: http://10.11.65.65:8317/v1
     api_key_env: OPENAI_API_KEY
     temperature: 0.2
-    max_tokens: 2000
+    max_tokens: 25600
     prompt_pack: prompts/agent/falsification_loop.yaml
     max_iterations: 6
     replay_path:

@@ -6,6 +6,7 @@ import json
 from falcon.agent.providers import ScriptedLLMProvider
 from falcon.agent.team import load_team_role_instructions, run_team_loop
 from falcon.literature.search import LiteratureRecord, StaticLiteratureClient
+from falcon.tools.dynamic import DynamicPythonToolRunner
 from falcon.tools.agent_registry import EvidenceToolExecutor
 from falcon.tools.manifest import default_tool_manifest
 
@@ -200,7 +201,7 @@ def test_team_loop_builds_candidate_ledger_with_literature_and_direct_tools() ->
     assert ledger["final"]["accepted_hypotheses"] == ["H1"]
 
 
-def test_team_loop_retries_invalid_tool_schema_and_records_blocked_step() -> None:
+def test_team_loop_records_invalid_tool_plan_as_validation_rejection() -> None:
     provider = ScriptedLLMProvider(
         [
             {"queries": ["CRISPR candidate"], "rationale": "Ground literature."},
@@ -232,8 +233,32 @@ def test_team_loop_retries_invalid_tool_schema_and_records_blocked_step() -> Non
                 ]
             },
             {"tool_requests": [{"tool": "interproscan", "parameters": {"protein_id": "neighbor1"}}]},
-            {"tool_requests": [{"tool": "still_not_a_tool", "parameters": {"protein_id": "neighbor1"}}]},
-            {"status": "incomplete", "rationale": "Blocked by invalid tool plan.", "evidence_refs": [], "uncertainties": []},
+            {
+                "audits": [
+                    {
+                        "test_id": "T1",
+                        "hypothesis_id": "H1",
+                        "verdict": "unresolved",
+                        "rationale": "The requested tool was rejected before execution.",
+                        "evidence_refs": [],
+                        "contradictions": ["tool plan used a tool id absent from the manifest"],
+                    }
+                ]
+            },
+            {
+                "revised_hypotheses": [
+                    {
+                        "id": "H1",
+                        "version": 2,
+                        "claim": "Candidate remains unresolved.",
+                        "status": "unresolved",
+                        "rationale": "Evidence collection failed validation.",
+                    }
+                ],
+                "rejected_hypotheses": [],
+                "contradictions": ["tool plan used a tool id absent from the manifest"],
+            },
+            {"status": "incomplete", "rationale": "Invalid tool plan left evidence unresolved.", "evidence_refs": [], "uncertainties": []},
         ]
     )
 
@@ -248,8 +273,9 @@ def test_team_loop_retries_invalid_tool_schema_and_records_blocked_step() -> Non
     )
 
     assert result.reasoning["status"] == "incomplete"
-    assert result.ledger["blocked_step"]["role"] == "tool_planner"
-    assert result.ledger["blocked_step"]["attempts"] == 2
+    assert "blocked_step" not in result.ledger
+    assert result.ledger["tool_plan_validations"][0]["status"] == "rejected"
+    assert any(observation["status"] == "rejected" for observation in result.ledger["tool_observations"])
     assert result.role_calls[-1]["role"] == "synthesizer"
 
 
@@ -312,7 +338,9 @@ output_contract: Output text.
 def test_team_prompt_loader_loads_repository_prompt_pack() -> None:
     instructions = load_team_role_instructions("prompts/agent/team")
 
-    assert "tool_manifest" in instructions["tool_planner"]
+    assert "context_workbench" in instructions["tool_planner"]
+    assert "run_candidate_mmseqs" not in instructions["tool_planner"]
+    assert "run_interproscan" not in instructions["tool_planner"]
     assert "candidate protein evidence" in instructions["hypothesis_generator"]
 
 
@@ -338,7 +366,7 @@ def test_team_loop_sends_context_pack_and_records_role_outputs_in_graph() -> Non
 
     assert planner_payload["role"] == "tool_planner"
     assert planner_payload["candidate_context"]["representative_neighbor"]["protein_id"] == "neighbor1"
-    assert {tool["id"] for tool in planner_payload["tool_manifest"]} >= {
+    assert {tool["id"] for tool in planner_payload["context_workbench"]["tool_catalog"]} >= {
         "run_candidate_mmseqs",
         "run_interproscan",
     }
@@ -353,3 +381,116 @@ def test_team_loop_sends_context_pack_and_records_role_outputs_in_graph() -> Non
     assert "audit_finding" in node_types
     assert "revision" in node_types
     assert "final_claim" in node_types
+
+
+def test_team_loop_can_run_reviewed_dynamic_tool_fallback(tmp_path: Path) -> None:
+    provider = ScriptedLLMProvider(
+        [
+            {"queries": ["candidate local check"], "rationale": "Ground the candidate."},
+            {"summary": "No direct literature.", "key_findings": [], "constraints": [], "citation_refs": []},
+            {
+                "hypotheses": [
+                    {
+                        "id": "H1",
+                        "claim": "Candidate requires a local custom evidence check.",
+                        "mechanism": "Unknown.",
+                        "expected_observations": ["custom local evidence"],
+                        "alternative_explanations": ["passenger"],
+                        "evidence_refs": [],
+                    }
+                ]
+            },
+            {
+                "tests": [
+                    {
+                        "id": "T1",
+                        "hypothesis_id": "H1",
+                        "question": "Can a local custom check be computed?",
+                        "support_criteria": "Dynamic tool returns a structured observation.",
+                        "weaken_criteria": "Dynamic tool is inconclusive.",
+                        "falsify_criteria": "Dynamic tool contradicts the claim.",
+                        "evidence_needed": "custom local evidence unsupported by fixed tools",
+                        "suggested_tools": [],
+                    }
+                ]
+            },
+            {
+                "tool_requests": [
+                    {
+                        "tool": "not_in_manifest",
+                        "evidence_need_id": "T1",
+                        "reason": "No fixed manifest tool can compute this local check.",
+                        "parameters": {},
+                    }
+                ],
+                "skipped_needs": [],
+            },
+            {
+                "evidence_need_id": "T1",
+                "purpose": "Compute a local structured observation from the provided input bundle.",
+                "input_artifacts": ["target_evidence_need"],
+                "output_schema": {"answer": "string"},
+                "script_source": (
+                    "def run(input_payload):\n"
+                    "    return {\n"
+                    "        'status': 'ok',\n"
+                    "        'answer': input_payload['target_evidence_need']['test_id'],\n"
+                    "        'observations': [{'computed': True}],\n"
+                    "        'evidence_refs': [],\n"
+                    "        'limitations': []\n"
+                    "    }\n"
+                ),
+                "limitations": [],
+            },
+            {"approved": True, "rationale": "The script is local, read-only, and returns structured JSON.", "required_changes": []},
+            {
+                "audits": [
+                    {
+                        "test_id": "T1",
+                        "hypothesis_id": "H1",
+                        "verdict": "support",
+                        "rationale": "The dynamic tool returned a structured observation.",
+                        "evidence_refs": [],
+                        "contradictions": [],
+                    }
+                ]
+            },
+            {
+                "revised_hypotheses": [
+                    {
+                        "id": "H1",
+                        "version": 2,
+                        "claim": "Candidate has a computed local observation.",
+                        "status": "retained",
+                        "rationale": "Dynamic evidence was collected.",
+                    }
+                ],
+                "rejected_hypotheses": [],
+                "contradictions": [],
+            },
+            {
+                "status": "weak",
+                "rationale": "Dynamic evidence was collected and audited.",
+                "evidence_refs": [],
+                "accepted_hypotheses": ["H1"],
+                "rejected_hypotheses": [],
+                "unresolved_hypotheses": [],
+                "uncertainties": [],
+            },
+        ]
+    )
+
+    result = run_team_loop(
+        candidate_index=1,
+        candidate_slug="q1-neighbor30",
+        evidence=evidence_packet(),
+        provider=provider,
+        tool_executor=EvidenceToolExecutor(),
+        max_rounds=1,
+        dynamic_tools_enabled=True,
+        dynamic_tool_runner=DynamicPythonToolRunner(output_dir=tmp_path / "dynamic", log_dir=tmp_path / "logs"),
+    )
+
+    assert result.ledger["dynamic_tools"][-1]["result"]["result"]["answer"] == "T1"
+    assert any(node["type"] == "dynamic_tool_result" for node in result.ledger["evidence_graph"]["nodes"])
+    assert any(observation.get("tool") == "dynamic_python" for observation in result.ledger["tool_observations"])

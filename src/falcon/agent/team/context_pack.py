@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from falcon.agent.team.ledger import CandidateLedger
+from falcon.agent.team.workbench import build_context_workbench
 from falcon.tools.manifest import ToolManifest
 
 
@@ -13,10 +14,13 @@ def build_role_context_pack(
     ledger: CandidateLedger,
     evidence: dict[str, Any],
     tool_manifest: ToolManifest | None = None,
+    dynamic_tools_enabled: bool = False,
 ) -> dict[str, Any]:
+    candidate_context = _candidate_context(ledger=ledger, evidence=evidence)
     return {
         "role": role,
-        "candidate_context": _candidate_context(ledger=ledger, evidence=evidence),
+        "candidate_context": candidate_context,
+        "family_naming": deepcopy(ledger.get("family_naming", {})),
         "literature_context": _literature_context(ledger),
         "evidence_graph": _graph_slice(role=role, ledger=ledger),
         "open_questions": {
@@ -25,6 +29,14 @@ def build_role_context_pack(
             "uncertainties": deepcopy(ledger.get("uncertainties", [])),
         },
         "tool_manifest": tool_manifest.to_prompt_payload() if tool_manifest is not None else [],
+        "context_workbench": build_context_workbench(
+            role=role,
+            ledger=ledger,
+            evidence=evidence,
+            candidate_context=candidate_context,
+            tool_manifest=tool_manifest,
+            dynamic_tools_enabled=dynamic_tools_enabled,
+        ),
     }
 
 
@@ -96,6 +108,7 @@ def _literature_context(ledger: CandidateLedger) -> dict[str, Any]:
     return {
         "queries": deepcopy(literature.get("queries", [])),
         "brief": deepcopy(literature.get("brief", {})),
+        "scoped_summaries": deepcopy(literature.get("scoped_summaries", [])),
         "records": [_compact_literature_record(record) for record in literature.get("records", [])],
         "failed_queries": deepcopy(literature.get("failed_queries", [])),
     }
@@ -115,13 +128,68 @@ def _compact_literature_record(record: dict[str, Any]) -> dict[str, Any]:
 
 def _graph_slice(*, role: str, ledger: CandidateLedger) -> dict[str, Any]:
     graph = deepcopy(ledger.get("evidence_graph", {"nodes": [], "edges": []}))
-    if role in {"tool_planner", "evidence_auditor", "hypothesis_reviser", "synthesizer"}:
+    if role == "evidence_auditor":
         return graph
+    if role == "tool_planner":
+        return _filter_graph(
+            graph,
+            allowed_types={
+                "candidate",
+                "occurrence",
+                "annotation",
+                "family_term_selection",
+                "literature_summary",
+                "hypothesis",
+                "falsification_test",
+                "evidence_need",
+                "tool_request",
+                "tool_summary",
+            },
+        )
+    if role == "hypothesis_reviser":
+        return _filter_graph(
+            graph,
+            allowed_types={
+                "candidate",
+                "family_term_selection",
+                "literature_summary",
+                "hypothesis",
+                "falsification_test",
+                "evidence_need",
+                "tool_summary",
+                "audit_finding",
+            },
+        )
+    if role == "synthesizer":
+        return _filter_graph(
+            graph,
+            allowed_types={
+                "candidate",
+                "family_term_selection",
+                "literature_summary",
+                "hypothesis",
+                "audit_finding",
+                "revision",
+                "final_claim",
+            },
+        )
     return {
         "nodes": [
             node
             for node in graph.get("nodes", [])
-            if node.get("type") in {"candidate", "occurrence", "annotation", "literature_record", "hypothesis"}
+            if node.get("type")
+            in {"candidate", "occurrence", "annotation", "literature_record", "literature_summary", "family_term_selection", "hypothesis"}
         ],
         "edges": deepcopy(graph.get("edges", [])),
     }
+
+
+def _filter_graph(graph: dict[str, Any], *, allowed_types: set[str]) -> dict[str, Any]:
+    nodes = [node for node in graph.get("nodes", []) if node.get("type") in allowed_types]
+    allowed_ids = {str(node.get("id")) for node in nodes}
+    edges = [
+        edge
+        for edge in graph.get("edges", [])
+        if str(edge.get("source")) in allowed_ids and str(edge.get("target")) in allowed_ids
+    ]
+    return {"nodes": nodes, "edges": edges}

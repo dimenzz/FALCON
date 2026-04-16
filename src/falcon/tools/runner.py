@@ -52,6 +52,7 @@ def run_external_command(
     event_logger: Any | None = None,
     heartbeat_seconds: float | None = None,
     event_context: Mapping[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     logs = Path(log_dir)
     logs.mkdir(parents=True, exist_ok=True)
@@ -84,26 +85,34 @@ def run_external_command(
             text=True,
         )
         started_monotonic = time.monotonic()
-        if event_logger is None or heartbeat_seconds is None or heartbeat_seconds <= 0:
-            return_code = process.wait()
+        next_heartbeat = (
+            started_monotonic + float(heartbeat_seconds)
+            if event_logger is not None and heartbeat_seconds is not None and heartbeat_seconds > 0
+            else None
+        )
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                break
+            now = time.monotonic()
+            if timeout_seconds is not None and now - started_monotonic >= float(timeout_seconds):
+                process.kill()
+                return_code = process.wait()
+                timed_out = True
+                break
+            if next_heartbeat is not None and now >= next_heartbeat:
+                event_logger.emit(
+                    "external_command_heartbeat",
+                    **context,
+                    label=label,
+                    elapsed_seconds=round(now - started_monotonic, 3),
+                    stdout_log=str(stdout_log),
+                    stderr_log=str(stderr_log),
+                )
+                next_heartbeat = now + float(heartbeat_seconds)
+            time.sleep(0.1 if next_heartbeat is None else min(0.1, max(float(heartbeat_seconds) / 2, 0.01)))
         else:
-            next_heartbeat = started_monotonic + float(heartbeat_seconds)
-            while True:
-                return_code = process.poll()
-                if return_code is not None:
-                    break
-                now = time.monotonic()
-                if now >= next_heartbeat:
-                    event_logger.emit(
-                        "external_command_heartbeat",
-                        **context,
-                        label=label,
-                        elapsed_seconds=round(now - started_monotonic, 3),
-                        stdout_log=str(stdout_log),
-                        stderr_log=str(stderr_log),
-                    )
-                    next_heartbeat = now + float(heartbeat_seconds)
-                time.sleep(min(0.1, max(float(heartbeat_seconds) / 2, 0.01)))
+            timed_out = False
 
     trace = ExternalCommandTrace(
         label=label,
@@ -114,6 +123,10 @@ def run_external_command(
         started_at=started_at,
         finished_at=_utc_timestamp(),
     ).to_dict()
+    if "timed_out" not in locals():
+        timed_out = False
+    if timed_out:
+        trace["timed_out"] = True
     if event_logger is not None:
         event_logger.emit(
             "external_command_finished" if return_code == 0 else "external_command_failed",

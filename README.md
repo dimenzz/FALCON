@@ -8,7 +8,7 @@ FALCON is a falsification-first agentic system for metagenomic discovery. It is 
 4. run evidence-driven reasoning on individual candidate neighbor proteins,
 5. report hypotheses, falsification attempts, contradictions, and uncertainty.
 
-The current implementation is intentionally smaller than the full vision. It provides CLI-driven homology search, context cohort construction, co-localization scoring, sequence lookup, and Agent reasoning workflows ranging from deterministic rule-based reports to replayable single-LLM and multi-agent LLM review. The multi-agent workflow can plan allowlisted evidence tools, including on-demand InterProScan checks and Europe PMC + PubMed literature search. It does not yet support dynamic tool generation or full evidence graph assembly.
+The current implementation is intentionally smaller than the full vision. It provides CLI-driven homology search, context cohort construction, co-localization scoring, sequence lookup, and Agent reasoning workflows ranging from deterministic rule-based reports to replayable single-LLM and multi-agent LLM review. The multi-agent workflow uses deterministic accession-based family naming, manifest-described tools, a per-candidate evidence graph, a role-specific context workbench, optional on-demand InterProScan/MMseqs checks, a generic local sequence architecture probe, scoped literature summaries, and controlled dynamic Python tools when explicitly enabled.
 
 ## Install
 
@@ -40,6 +40,30 @@ configs/default.yaml
 ```
 
 The default config points to the current MGnify SQLite databases, manifests, MMseqs databases, and InterProScan installation.
+
+Relative paths written inside a YAML config are resolved against the config file's project root, not against the shell directory where `falcon` is launched. For `configs/default.yaml`, FALCON finds the repository root and resolves paths such as `data/data_manifests/protein_manifest.csv`, `prompts/agent/team`, and `configs/tool_manifest.yaml` from there. This makes the default config safe to use from another working directory.
+
+CLI path overrides keep normal shell semantics. For example, `--candidates relative/path.jsonl` and `--out-dir runs/test` are interpreted relative to your current working directory unless you pass absolute paths.
+
+Run from outside the repository by using an absolute config path:
+
+```bash
+cd /tmp
+
+uv run --project /mnt/data1/zhuwei/projects/FALCON falcon config show \
+  --config /mnt/data1/zhuwei/projects/FALCON/configs/default.yaml
+```
+
+For a full run from another directory, prefer absolute input/output paths when referencing run artifacts:
+
+```bash
+cd /tmp
+
+uv run --project /mnt/data1/zhuwei/projects/FALCON falcon agent reason \
+  --candidates /mnt/data1/zhuwei/projects/FALCON/runs/example-search/candidate_neighbors.jsonl \
+  --config /mnt/data1/zhuwei/projects/FALCON/configs/default.yaml \
+  --out-dir /mnt/data1/zhuwei/projects/FALCON/runs/example-agent-team
+```
 
 ## CLI
 
@@ -178,6 +202,32 @@ uv run falcon agent reason \
   --out-dir runs/example-agent-live
 ```
 
+Run the team workflow with manifest-driven tools and progress logging:
+
+```bash
+uv run falcon agent reason \
+  --candidates runs/example-search/candidate_neighbors.jsonl \
+  --config configs/default.yaml \
+  --agent-workflow team \
+  --llm-mode live \
+  --model-name your-model-name \
+  --out-dir runs/example-agent-team
+```
+
+Dynamic tools are off by default. When enabled, the LLM may design a read-only Python script for a local evidence need that fixed tools cannot answer. FALCON reviews the script, runs it in an outer Python subprocess, captures logs, and stores script/input/output artifacts under `dynamic_tools/`.
+
+```bash
+uv run falcon agent reason \
+  --candidates runs/example-search/candidate_neighbors.jsonl \
+  --config configs/default.yaml \
+  --agent-workflow team \
+  --llm-mode live \
+  --model-name your-model-name \
+  --dynamic-tools \
+  --dynamic-tool-timeout 60 \
+  --out-dir runs/example-agent-team-dynamic
+```
+
 Live mode requires an explicit model name from YAML or `--model-name`; FALCON does not guess a default model. Custom OpenAI-compatible endpoints are supported through `agent.llm.base_url` or `--base-url`. API key lookup uses `agent.llm.api_key_env`, defaulting to `OPENAI_API_KEY`.
 
 LLM prompts are centralized under `prompts/agent/`. The default prompt pack is `prompts/agent/falsification_loop.yaml` and defines the allowed JSON actions:
@@ -210,7 +260,7 @@ uv run falcon agent reason \
   --out-dir runs/example-agent-team
 ```
 
-The team workflow now uses a per-candidate evidence graph ledger. Each role receives a structured context pack with candidate-neighbor evidence, occurrence examples, literature citations and abstract excerpts, current graph state, unresolved gaps, and the YAML tool manifest. The `tool_planner` selects tools from `configs/tool_manifest.yaml`; prompts should not hard-code a preferred tool. Tool execution remains deterministic and allowlisted through the registry. Literature search aggregates Europe PMC and PubMed records and de-duplicates by PMID, DOI, then title. InterProScan and candidate-specific MMseqs are budget-aware manifest tools and can be skipped or deferred with an auditable reason. Tool failures are recorded as evidence observations instead of aborting the candidate.
+The team workflow now uses a per-candidate evidence graph ledger. Each role receives a structured context pack with a `context_workbench`: deterministic family naming, occurrence examples, scoped literature priors, current graph state, unresolved gaps, the manifest-derived tool catalog, data contracts, artifact index, and dynamic tool contract. The `tool_planner` selects tools from the workbench rather than prompt-embedded tool names, and FALCON validates each plan against manifest capabilities before execution. Literature search aggregates Europe PMC and PubMed records and de-duplicates by PMID, DOI, then title. InterProScan, candidate MMseqs, the local sequence architecture probe, full-context feature queries, motif checks, and optional dynamic Python tools are recorded with auditable reasons, logs, raw observations, summary nodes, and evidence graph edges.
 
 Team workflow artifacts include:
 
@@ -221,7 +271,7 @@ Team workflow artifacts include:
 - `literature_evidence.jsonl`
 - `ledgers/*.json` with `evidence_graph`
 
-External tool stdout and stderr are captured under `runtime.log_dir`. When `runtime.progress` is true, long-running tools also emit CLI stderr progress events and heartbeat messages while preserving machine-readable JSON on stdout. The run directory records the same lifecycle events in `agent_events.jsonl`.
+External tool stdout and stderr are captured under `runtime.log_dir`. When `runtime.progress` is true, long-running tools also emit CLI stderr progress events and heartbeat messages while preserving machine-readable JSON on stdout. The run directory records the same lifecycle events in `agent_events.jsonl`. Live accession enrichment for `COG`, `KEGG`, `Pfam`, and `InterPro` is cached immutably under `runtime.cache_dir/accession/`.
 
 ## Current Scope
 

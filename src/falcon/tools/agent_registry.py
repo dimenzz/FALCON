@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+import re
 
 from falcon.literature.search import LiteratureClient, StaticLiteratureClient
+from falcon.tools.local_architecture import probe_local_sequence_architecture
 from falcon.tools.manifest import ToolManifest, default_tool_manifest
 
 
@@ -15,6 +17,9 @@ class EvidenceToolExecutor:
         "search_literature",
         "inspect_context",
         "summarize_annotations",
+        "query_context_features",
+        "check_candidate_motifs",
+        "local_sequence_architecture_probe",
         "run_interproscan",
         "run_candidate_mmseqs",
     }
@@ -74,6 +79,12 @@ class EvidenceToolExecutor:
                     result = self._inspect_context(request, evidence)
                 elif tool == "summarize_annotations":
                     result = self._summarize_annotations(request, evidence)
+                elif tool == "query_context_features":
+                    result = self._query_context_features(request, evidence)
+                elif tool == "check_candidate_motifs":
+                    result = self._check_candidate_motifs(request, evidence)
+                elif tool == "local_sequence_architecture_probe":
+                    result = self._local_sequence_architecture_probe(request, evidence)
                 elif tool == "run_interproscan":
                     result = self._run_interproscan(request, evidence)
                 elif tool == "run_candidate_mmseqs":
@@ -147,6 +158,113 @@ class EvidenceToolExecutor:
             )
         return {"tool": "summarize_annotations", "status": "ok", "annotations": annotations}
 
+    def _query_context_features(self, request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+        parameters = _parameters(request)
+        patterns = _string_list(parameters.get("patterns") or parameters.get("pattern") or parameters.get("query"))
+        if not patterns:
+            return {"tool": "query_context_features", "status": "skipped", "reason": "no query patterns were provided"}
+        fields = set(_string_list(parameters.get("fields"))) or {
+            "product",
+            "gene_name",
+            "pfam",
+            "interpro",
+            "kegg",
+            "cog_id",
+            "cog_category",
+            "protein_id",
+        }
+        matches = []
+        for example_index, example in enumerate(evidence.get("examples", []), start=1):
+            example_matches = []
+            for item in (example.get("context") or {}).get("context", []):
+                protein = item.get("protein") or {}
+                clusters = item.get("clusters") or {}
+                haystack = " ".join(
+                    str(value or "")
+                    for key, value in protein.items()
+                    if key in fields
+                )
+                haystack = f"{haystack} {' '.join(str(value) for value in clusters.values())}".lower()
+                matched_patterns = [pattern for pattern in patterns if str(pattern).lower() in haystack]
+                if not matched_patterns:
+                    continue
+                example_matches.append(
+                    {
+                        "protein_id": protein.get("protein_id"),
+                        "relative_index": item.get("relative_index"),
+                        "product": protein.get("product"),
+                        "gene_name": protein.get("gene_name"),
+                        "pfam": protein.get("pfam"),
+                        "interpro": protein.get("interpro"),
+                        "clusters": clusters,
+                        "matched_patterns": matched_patterns,
+                    }
+                )
+            if example_matches:
+                matches.append(
+                    {
+                        "example_index": example_index,
+                        "context_protein_id": example.get("context_protein_id"),
+                        "neighbor_protein_id": example.get("neighbor_protein_id"),
+                        "matches": example_matches,
+                    }
+                )
+        return {
+            "tool": "query_context_features",
+            "status": "ok",
+            "patterns": patterns,
+            "matches": matches,
+            "summary": {
+                "contexts_examined": len(evidence.get("examples", [])),
+                "contexts_with_matches": len(matches),
+                "total_matches": sum(len(match["matches"]) for match in matches),
+            },
+        }
+
+    def _check_candidate_motifs(self, request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+        protein = evidence.get("sequence_evidence", {}).get("protein", {})
+        sequence = str(protein.get("sequence") or "")
+        if not sequence:
+            return {
+                "tool": "check_candidate_motifs",
+                "status": "skipped",
+                "reason": "protein sequence is unavailable in evidence packet",
+            }
+        parameters = _parameters(request)
+        motifs = parameters.get("motifs") or []
+        if isinstance(motifs, dict):
+            motifs = [motifs]
+        if isinstance(motifs, str):
+            motifs = [{"id": motifs, "pattern": motifs}]
+        results = []
+        for index, motif in enumerate(motifs, start=1):
+            if not isinstance(motif, dict):
+                motif = {"id": f"motif_{index}", "pattern": str(motif)}
+            pattern = str(motif.get("pattern") or motif.get("regex") or "")
+            if not pattern:
+                results.append({"id": motif.get("id") or f"motif_{index}", "pattern": pattern, "matches": []})
+                continue
+            try:
+                matches = [
+                    {"start": match.start() + 1, "end": match.end(), "match": match.group(0)}
+                    for match in re.finditer(pattern, sequence)
+                ]
+            except re.error as exc:
+                return {
+                    "tool": "check_candidate_motifs",
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                }
+            results.append({"id": motif.get("id") or f"motif_{index}", "pattern": pattern, "matches": matches})
+        return {
+            "tool": "check_candidate_motifs",
+            "status": "ok",
+            "protein_id": protein.get("protein_id"),
+            "sequence_length": len(sequence),
+            "motifs": results,
+        }
+
     def _run_interproscan(self, request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
         parameters = _parameters(request)
         force = bool(parameters.get("force") or request.get("force"))
@@ -205,6 +323,30 @@ class EvidenceToolExecutor:
                 "reason": str(exc),
             }
 
+    def _local_sequence_architecture_probe(self, request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+        dna = evidence.get("sequence_evidence", {}).get("dna", {})
+        sequence = str(dna.get("sequence") or "")
+        if not sequence:
+            return {
+                "tool": "local_sequence_architecture_probe",
+                "status": "skipped",
+                "reason": "dna sequence is unavailable in evidence packet",
+            }
+        parameters = _parameters(request)
+        probe = probe_local_sequence_architecture(
+            sequence=sequence,
+            min_repeat_unit_length=int(parameters.get("min_repeat_unit_length", 4)),
+            max_repeat_unit_length=int(parameters.get("max_repeat_unit_length", 12)),
+            min_copy_count=int(parameters.get("min_copy_count", 2)),
+        )
+        return {
+            "tool": "local_sequence_architecture_probe",
+            "status": "ok",
+            "sequence_length": len(sequence),
+            "features": probe["features"],
+            "summary": probe["summary"],
+        }
+
 
 def build_interproscan_runner(
     *,
@@ -218,7 +360,7 @@ def build_interproscan_runner(
     if interproscan_path is None:
         return None
 
-    from falcon.tools.interproscan import build_interproscan_command
+    from falcon.tools.interproscan import build_interproscan_command, parse_interproscan_tsv
     from falcon.tools.runner import run_external_command
 
     def _runner(request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -250,6 +392,7 @@ def build_interproscan_runner(
             "protein_id": protein_id,
             "input_fasta": str(fasta_path),
             "trace": trace,
+            "domains": _parse_interproscan_domains(tool_dir, parse_interproscan_tsv=parse_interproscan_tsv),
         }
 
     return _runner
@@ -321,6 +464,16 @@ def _parameters(request: dict[str, Any]) -> dict[str, Any]:
     return parameters if isinstance(parameters, dict) else {}
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
 def _has_existing_domain_annotations(evidence: dict[str, Any]) -> bool:
     for example in evidence.get("examples", []):
         neighbor = example.get("neighbor_protein") or {}
@@ -331,3 +484,10 @@ def _has_existing_domain_annotations(evidence: dict[str, Any]) -> bool:
 
 def _safe_id(value: str) -> str:
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
+
+
+def _parse_interproscan_domains(tool_dir: Path, *, parse_interproscan_tsv: Callable[[str], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    tsv_files = sorted(tool_dir.glob("*.tsv"))
+    if not tsv_files:
+        return []
+    return parse_interproscan_tsv(tsv_files[0].read_text(encoding="utf-8"))

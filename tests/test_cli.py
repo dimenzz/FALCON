@@ -389,6 +389,9 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
             "--no-resume",
             "--max-expensive-tools-per-candidate",
             "2",
+            "--dynamic-tools",
+            "--dynamic-tool-timeout",
+            "45",
             "--progress",
             "--heartbeat-seconds",
             "15",
@@ -423,6 +426,8 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
     assert payload["agent"]["team"]["tool_manifest"] == str(tmp_path / "tool_manifest.yaml")
     assert payload["agent"]["team"]["resume"] == "off"
     assert payload["agent"]["team"]["tool_budget"]["max_expensive_tools_per_candidate"] == 2
+    assert payload["agent"]["dynamic_tools"]["enabled"] is True
+    assert payload["agent"]["dynamic_tools"]["timeout_seconds"] == 45
     assert payload["agent"]["literature"]["max_results_per_source"] == 7
     assert payload["agent"]["tools"]["mmseqs"]["max_hits"] == 9
     assert payload["runtime"]["progress"] is True
