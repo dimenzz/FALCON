@@ -1,7 +1,28 @@
 from falcon.tools.agent_registry import EvidenceToolExecutor
 from falcon.tools.manifest import ToolManifest, ToolSpec
 
-from test_agent_team import evidence_packet
+
+def evidence_packet() -> dict:
+    return {
+        "candidate": {"query_id": "q1", "cluster_30": "neighbor30"},
+        "examples": [
+            {
+                "context_protein_id": "target1",
+                "neighbor_protein_id": "neighbor1",
+                "neighbor_protein": {
+                    "protein_id": "neighbor1",
+                    "product": "hypothetical protein",
+                    "pfam": None,
+                    "interpro": None,
+                    "gene_name": None,
+                },
+            }
+        ],
+        "sequence_evidence": {
+            "protein": {"available": True, "protein_id": "neighbor1", "sequence": "MKT"},
+            "dna": {"available": True, "protein_id": "neighbor1", "sequence": "ATGAAAACC"},
+        },
+    }
 
 
 def test_tool_executor_skips_disabled_manifest_tool() -> None:

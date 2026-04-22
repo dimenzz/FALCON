@@ -112,15 +112,32 @@ def write_candidate(path: Path) -> None:
     )
 
 
+def write_query_catalog(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "query_id": "q1",
+                "header_description": "seed system protein",
+                "function_description": "seed system protein",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_reason_candidates_writes_evidence_results_and_markdown(tmp_path: Path) -> None:
     proteins_db, clusters_db = create_agent_databases(tmp_path)
     protein_manifest, genome_manifest = create_agent_sequences(tmp_path)
     candidates_path = tmp_path / "candidate_neighbors.jsonl"
+    query_catalog = tmp_path / "seeds.jsonl"
     out_dir = tmp_path / "agent"
     write_candidate(candidates_path)
+    write_query_catalog(query_catalog)
 
     summary = reason_candidates(
         candidates_path=candidates_path,
+        query_catalog_path=query_catalog,
         proteins_db=proteins_db,
         clusters_db=clusters_db,
         protein_manifest=protein_manifest,
@@ -131,6 +148,7 @@ def test_reason_candidates_writes_evidence_results_and_markdown(tmp_path: Path) 
         include_sequences=False,
         flank_bp=3,
         sequence_max_bases=100,
+        max_rounds=1,
     )
 
     results = [
@@ -138,13 +156,15 @@ def test_reason_candidates_writes_evidence_results_and_markdown(tmp_path: Path) 
         for line in (out_dir / "agent_results.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert summary["candidates_processed"] == 1
-    assert summary["workflow"] == "deterministic"
+    assert summary["query_catalog"] == str(query_catalog)
+    assert summary["program_trace"] == str(out_dir / "program_trace.jsonl")
     assert results[0]["candidate"]["cluster_30"] == "neighbor30"
-    assert results[0]["reasoning"]["status"] == "supported"
+    assert results[0]["reasoning"]["status"] == "weak"
     assert results[0]["sequence_evidence"]["protein"]["available"] is True
     assert results[0]["sequence_evidence"]["protein"]["length"] == 3
     assert "sequence" not in results[0]["sequence_evidence"]["protein"]
+    assert results[0]["seed_summary"]["query_prior"]["confidence"] == "soft_prior"
     assert results[0]["falsification_checklist"]
     report = Path(results[0]["report_path"]).read_text(encoding="utf-8")
-    assert "Falsification Checklist" in report
+    assert "Research Notebook" in report
     assert "neighbor30" in report

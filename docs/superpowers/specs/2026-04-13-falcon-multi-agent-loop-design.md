@@ -33,3 +33,6 @@ Team runs write:
 ## Scope
 
 The workflow does not add dynamic tool generation or arbitrary shell execution. Deterministic and single-agent workflows remain available for short-term comparison, but `team` is the intended direction.
+# Superseded
+
+This design is superseded by the 2026-04-21 research-runtime refactor plan and no longer describes the current agent runtime.

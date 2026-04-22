@@ -7,6 +7,13 @@ def render_agent_report(result: dict[str, Any]) -> str:
     candidate = result["candidate"]
     reasoning = result["reasoning"]
     sequence = result["sequence_evidence"]
+    seed_summary = result.get("seed_summary") or {}
+    ledger = result.get("ledger") or {}
+    notebook = ledger.get("notebook") or {}
+    agendas = ledger.get("agendas") or []
+    audited_claims = ledger.get("audited_claims") or []
+    tool_runs = ledger.get("tool_runs") or []
+
     lines = [
         f"# Candidate {candidate['query_id']} / {candidate['cluster_30']}",
         "",
@@ -18,177 +25,93 @@ def render_agent_report(result: dict[str, Any]) -> str:
         f"- Fold enrichment: {candidate.get('fold_enrichment')}",
         f"- q-value: {candidate.get('q_value')}",
         "",
-        "## Evidence",
-        "",
-        f"- Examples inspected: {len(result['examples'])}",
-        f"- Protein sequence available: {sequence['protein']['available']}",
-        f"- DNA sequence available: {sequence['dna']['available']}",
+        "## Supported Claim",
         "",
     ]
+
     supported_claim = reasoning.get("supported_claim") or {}
     if supported_claim:
-        lines.extend(["## Supported Claim", ""])
         lines.append(f"- Label: {supported_claim.get('label', '')}")
         if supported_claim.get("evidence_refs"):
             lines.append(f"- Evidence refs: {', '.join(supported_claim.get('evidence_refs', []))}")
-        lines.append("")
+    else:
+        lines.append("- No supported claim recorded.")
+    lines.append("")
 
-    working_hypotheses = reasoning.get("working_hypotheses") or []
-    if working_hypotheses:
-        lines.extend(["## Working Mechanistic Hypotheses", ""])
-        for hypothesis in working_hypotheses:
+    lines.extend(["## Seed Summary", ""])
+    query_prior = seed_summary.get("query_prior") or {}
+    target_consensus = seed_summary.get("target_consensus_annotation") or {}
+    lines.append(f"- Query prior: {query_prior.get('function_description') or query_prior.get('header_description') or 'n/a'}")
+    lines.append(f"- Target consensus product: {target_consensus.get('product') or 'n/a'}")
+    lines.append(f"- Target consensus gene name: {target_consensus.get('gene_name') or 'n/a'}")
+    lines.append("")
+
+    lines.extend(["## Research Notebook", ""])
+    lines.append(f"- Active question: {notebook.get('active_question') or 'n/a'}")
+    if notebook.get("failed_bridges"):
+        for bridge in notebook["failed_bridges"]:
+            lines.append(f"- Failed bridge: {bridge.get('program_type')} - {bridge.get('reason')}")
+    if notebook.get("escalation_signals"):
+        for signal in notebook["escalation_signals"]:
+            lines.append(f"- Escalation signal: {signal}")
+    if notebook.get("recent_outcomes"):
+        for outcome in notebook["recent_outcomes"][-5:]:
             lines.append(
-                f"- {hypothesis.get('id')}: {hypothesis.get('mechanistic_label')} ({hypothesis.get('status', 'active')})"
+                f"- Outcome: {outcome.get('step_id')} / {outcome.get('program_type')} -> {outcome.get('status')}"
             )
-        lines.append("")
+    if not notebook.get("failed_bridges") and not notebook.get("recent_outcomes"):
+        lines.append("- No notebook updates recorded.")
+    lines.append("")
 
-    next_evidence_plan = reasoning.get("next_evidence_plan") or []
-    if next_evidence_plan:
-        lines.extend(["## Next Evidence Collection Plan", ""])
-        for item in next_evidence_plan:
+    lines.extend(["## Research Agenda", ""])
+    if agendas:
+        latest = agendas[-1]
+        lines.append(f"- Main question: {latest.get('main_question')}")
+        lines.append(f"- Current program: {latest.get('current_program')}")
+        for step in latest.get("steps", []):
+            lines.append(f"- Step {step.get('step_id')}: {step.get('program_type')} - {step.get('goal')}")
+    else:
+        lines.append("- No agenda recorded.")
+    lines.append("")
+
+    lines.extend(["## Audited Evidence", ""])
+    lines.append(f"- Examples inspected: {len(result['examples'])}")
+    lines.append(f"- Protein sequence available: {sequence['protein']['available']}")
+    lines.append(f"- DNA sequence available: {sequence['dna']['available']}")
+    for claim in audited_claims:
+        lines.append(
+            f"- {claim.get('step_id')} / {claim.get('program_type')}: {claim.get('verdict')} ({claim.get('status')})"
+        )
+    if not audited_claims:
+        lines.append("- No audited claims recorded.")
+    lines.append("")
+
+    lines.extend(["## Tool Runs", ""])
+    for tool_run in tool_runs:
+        lines.append(f"- {tool_run.get('tool')}: {tool_run.get('status')}")
+    if not tool_runs:
+        lines.append("- No tool runs recorded.")
+    lines.append("")
+
+    if reasoning.get("notebook_summary"):
+        lines.extend(["## Notebook Summary", ""])
+        for item in reasoning["notebook_summary"]:
             lines.append(f"- {item}")
         lines.append("")
 
-    if reasoning.get("evidence"):
-        lines.extend(["## Reasoning Evidence", ""])
-        for evidence in reasoning["evidence"]:
-            lines.append(f"- {evidence}")
+    if reasoning.get("agenda_summary"):
+        lines.extend(["## Agenda Summary", ""])
+        for item in reasoning["agenda_summary"]:
+            lines.append(f"- {item}")
         lines.append("")
 
-    ledger = result.get("ledger")
-    if ledger:
-        literature = ledger.get("literature", {})
-        brief = literature.get("brief", {})
-        lines.extend(["## Literature Grounding", ""])
-        if brief:
-            lines.append(f"- Summary: {brief.get('summary', '')}")
-            for finding in brief.get("key_findings", []):
-                lines.append(f"- Finding: {finding}")
-            for constraint in brief.get("constraints", []):
-                lines.append(f"- Constraint: {constraint}")
-        else:
-            lines.append("- No literature brief recorded.")
-        for record in literature.get("records", [])[:5]:
-            ref = record.get("evidence_ref")
-            title = record.get("title")
-            pmid = record.get("pmid")
-            lines.append(f"- {ref}: {title} (PMID: {pmid})")
+    if reasoning.get("next_program_recommendations"):
+        lines.extend(["## Next Program Recommendation", ""])
+        for item in reasoning["next_program_recommendations"]:
+            lines.append(f"- {item}")
         lines.append("")
 
-        graph = ledger.get("evidence_graph") or {}
-        nodes = graph.get("nodes", [])
-        edges = graph.get("edges", [])
-        lines.extend(["## Evidence Graph", ""])
-        lines.append(f"- Nodes: {len(nodes)}")
-        lines.append(f"- Edges: {len(edges)}")
-        node_type_counts: dict[str, int] = {}
-        for node in nodes:
-            node_type = str(node.get("type") or "unknown")
-            node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
-        for node_type, count in sorted(node_type_counts.items()):
-            lines.append(f"- {node_type}: {count}")
-        if not nodes:
-            lines.append("- No evidence graph nodes recorded.")
-        lines.append("")
-
-        lines.extend(["## Hypotheses", ""])
-        for hypothesis in ledger.get("hypotheses", []):
-            lines.append(f"- {hypothesis.get('id')}: {hypothesis.get('claim')}")
-        if not ledger.get("hypotheses"):
-            lines.append("- No hypotheses recorded.")
-        lines.append("")
-
-        lines.extend(["## Hypothesis-Specific Falsification Tests", ""])
-        for test in ledger.get("falsification_tests", []):
-            lines.append(f"- {test.get('id')} ({test.get('hypothesis_id')}): {test.get('question')}")
-            lines.append(f"  Support: {test.get('support_criteria')}")
-            lines.append(f"  Weaken: {test.get('weaken_criteria')}")
-            lines.append(f"  Falsify: {test.get('falsify_criteria')}")
-        if not ledger.get("falsification_tests"):
-            lines.append("- No hypothesis-specific tests recorded.")
-        lines.append("")
-
-        lines.extend(["## Audit and Revision", ""])
-        for validation in ledger.get("tool_plan_validations", []):
-            lines.append(
-                f"- Tool plan {validation.get('tool')} for {validation.get('evidence_need_id')}: "
-                f"{validation.get('status')} - {validation.get('reason')}"
-            )
-        for finding in ledger.get("audit", {}).get("findings", []):
-            lines.append(
-                f"- {finding.get('test_id')} / {finding.get('hypothesis_id')}: "
-                f"{finding.get('verdict')} - {finding.get('rationale')}"
-            )
-        for dynamic_record in ledger.get("dynamic_tools", []):
-            if dynamic_record.get("node_type") == "dynamic_tool_result":
-                result_payload = dynamic_record.get("result") or {}
-                lines.append(
-                    f"- Dynamic tool for {dynamic_record.get('evidence_need_id')}: "
-                    f"{result_payload.get('status')} - {result_payload.get('reason', result_payload.get('tool'))}"
-                )
-        for revision in ledger.get("revisions", []):
-            for hypothesis in revision.get("revised_hypotheses", []):
-                lines.append(
-                    f"- Revised {hypothesis.get('id')} v{hypothesis.get('version')}: "
-                    f"{hypothesis.get('status')} - {hypothesis.get('claim')}"
-                )
-        if not ledger.get("audit", {}).get("findings") and not ledger.get("revisions"):
-            lines.append("- No audit findings recorded.")
-        lines.append("")
-
-        lines.extend(["## Contradiction Ledger", ""])
-        if ledger.get("contradiction_ledger"):
-            for contradiction in ledger["contradiction_ledger"]:
-                lines.append(f"- {contradiction}")
-        else:
-            lines.append("- No contradictions recorded.")
-        lines.append("")
-
-    if "llm_trace" in result:
-        trace = result["llm_trace"]
-        lines.extend(
-            [
-                "## LLM Agent Loop",
-                "",
-                f"- Mode: {trace['mode']}",
-                f"- Provider: {trace['provider']}",
-                f"- Iterations: {trace['iterations']}",
-                f"- Finalized: {trace['finalized']}",
-            ]
-        )
-        for hypothesis in trace.get("hypotheses", []):
-            lines.append(f"- Hypothesis: {hypothesis}")
-        for contradiction in trace.get("contradictions", []):
-            lines.append(f"- Contradiction: {contradiction}")
-        lines.append("")
-
-    if "team_trace" in result:
-        trace = result["team_trace"]
-        lines.extend(
-            [
-                "## Multi-Agent Review",
-                "",
-                f"- Rounds: {trace['rounds']}",
-                f"- Ledger blocked: {trace.get('ledger_blocked', bool(trace.get('blocked_step')))}",
-            ]
-        )
-        for hypothesis in trace.get("hypotheses", []):
-            if isinstance(hypothesis, dict):
-                lines.append(f"- Hypothesis: {hypothesis.get('claim')}")
-            else:
-                lines.append(f"- Hypothesis: {hypothesis}")
-        for contradiction in trace.get("contradictions", trace.get("criticisms", [])):
-            lines.append(f"- Contradiction: {contradiction}")
-        lines.append("")
-
-    if result.get("tool_results"):
-        lines.extend(["## Tool Results", ""])
-        for tool_result in result["tool_results"]:
-            lines.append(f"- {tool_result.get('tool')}: {tool_result.get('status')}")
-        lines.append("")
-
-    checklist_title = "## Deterministic Checks" if ledger else "## Falsification Checklist"
-    lines.extend([checklist_title, ""])
+    lines.extend(["## Deterministic Checks", ""])
     for item in result["falsification_checklist"]:
         lines.append(f"- [{item['status']}] {item['question']} - {item['evidence']}")
 
@@ -197,6 +120,6 @@ def render_agent_report(result: dict[str, Any]) -> str:
         for uncertainty in result["uncertainties"]:
             lines.append(f"- {uncertainty}")
     else:
-        lines.append("- No blocking uncertainty recorded in this deterministic MVP.")
+        lines.append("- No blocking uncertainty recorded.")
     lines.append("")
     return "\n".join(lines)

@@ -213,6 +213,7 @@ def create_sequence_agent_config(tmp_path: Path) -> Path:
     genome_fasta = tmp_path / "magA.fna"
     genome_manifest = tmp_path / "genome_manifest.csv"
     protein_manifest = tmp_path / "protein_manifest.csv"
+    query_catalog = tmp_path / "seeds.jsonl"
     mmseqs_root = tmp_path / "mmseqs_db"
     mmseqs = tmp_path / "mmseqs"
     interproscan = tmp_path / "interproscan.sh"
@@ -279,6 +280,17 @@ def create_sequence_agent_config(tmp_path: Path) -> Path:
     genome_fasta.write_text(">contigA\nAACCGTTACTCC\n", encoding="utf-8")
     genome_manifest.write_text(f"magA,{genome_fasta}\n", encoding="utf-8")
     protein_manifest.write_text(f"magA,{protein_fasta}\n", encoding="utf-8")
+    query_catalog.write_text(
+        json.dumps(
+            {
+                "query_id": "q1",
+                "header_description": "SpCas9 seed",
+                "function_description": "CRISPR-associated endonuclease Cas9",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     mmseqs_root.mkdir()
     mmseqs.write_text("#!/bin/sh\n", encoding="utf-8")
     interproscan.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -303,12 +315,15 @@ runtime:
 sequence:
   max_bases: 100
 agent:
+  query_catalog: {query_catalog}
   max_candidates: 10
   max_examples: 5
   include_sequences: false
   flank_bp: 1
+  program_planner:
+    max_rounds: 1
   llm:
-    mode: deterministic
+    mode: mock
 """,
         encoding="utf-8",
     )
@@ -330,6 +345,11 @@ def test_config_show_prints_effective_json(tmp_path: Path) -> None:
 
 def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
     config_path = create_fixture_config(tmp_path)
+    query_catalog = tmp_path / "seeds.jsonl"
+    query_catalog.write_text(
+        json.dumps({"query_id": "q1", "header_description": "seed", "function_description": "seed protein"}) + "\n",
+        encoding="utf-8",
+    )
 
     result = runner.invoke(
         app,
@@ -366,19 +386,15 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
             "0.1",
             "--max-tokens",
             "1234",
-            "--prompt-pack",
-            str(tmp_path / "prompt.yaml"),
-            "--max-iterations",
-            "8",
-            "--agent-workflow",
-            "team",
-            "--max-team-rounds",
+            "--query-catalog",
+            str(query_catalog),
+            "--max-rounds",
             "3",
-            "--team-prompt-dir",
-            str(tmp_path / "team_prompts"),
-            "--team-schema-retries",
+            "--prompt-dir",
+            str(tmp_path / "reasoning_prompts"),
+            "--schema-retries",
             "4",
-            "--team-ledger-dir",
+            "--ledger-dir",
             "candidate_ledgers",
             "--literature-max-results",
             "7",
@@ -386,7 +402,6 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
             "9",
             "--tool-manifest",
             str(tmp_path / "tool_manifest.yaml"),
-            "--no-resume",
             "--max-expensive-tools-per-candidate",
             "2",
             "--dynamic-tools",
@@ -416,16 +431,13 @@ def test_config_show_accepts_cluster_cli_overrides(tmp_path: Path) -> None:
     assert payload["agent"]["llm"]["api_key_env"] == "FALCON_TEST_KEY"
     assert payload["agent"]["llm"]["temperature"] == 0.1
     assert payload["agent"]["llm"]["max_tokens"] == 1234
-    assert payload["agent"]["llm"]["prompt_pack"] == str(tmp_path / "prompt.yaml")
-    assert payload["agent"]["llm"]["max_iterations"] == 8
-    assert payload["agent"]["workflow"] == "team"
-    assert payload["agent"]["team"]["max_rounds"] == 3
-    assert payload["agent"]["team"]["prompt_dir"] == str(tmp_path / "team_prompts")
-    assert payload["agent"]["team"]["schema_retries"] == 4
-    assert payload["agent"]["team"]["ledger_dir"] == "candidate_ledgers"
-    assert payload["agent"]["team"]["tool_manifest"] == str(tmp_path / "tool_manifest.yaml")
-    assert payload["agent"]["team"]["resume"] == "off"
-    assert payload["agent"]["team"]["tool_budget"]["max_expensive_tools_per_candidate"] == 2
+    assert payload["agent"]["query_catalog"] == str(query_catalog)
+    assert payload["agent"]["program_planner"]["max_rounds"] == 3
+    assert payload["agent"]["program_planner"]["prompt_dir"] == str(tmp_path / "reasoning_prompts")
+    assert payload["agent"]["program_planner"]["schema_retries"] == 4
+    assert payload["agent"]["reporting"]["ledger_dir"] == "candidate_ledgers"
+    assert payload["agent"]["tools"]["manifest"] == str(tmp_path / "tool_manifest.yaml")
+    assert payload["agent"]["tools"]["max_expensive_tools_per_candidate"] == 2
     assert payload["agent"]["dynamic_tools"]["enabled"] is True
     assert payload["agent"]["dynamic_tools"]["timeout_seconds"] == 45
     assert payload["agent"]["literature"]["max_results_per_source"] == 7
@@ -709,7 +721,7 @@ def test_agent_reason_command_writes_results_and_reports(tmp_path: Path) -> None
         json.loads(line)
         for line in (out_dir / "agent_results.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert results[0]["reasoning"]["status"] == "supported"
+    assert results[0]["reasoning"]["status"] == "weak"
     assert Path(results[0]["report_path"]).exists()
 
 
@@ -756,23 +768,8 @@ def test_agent_reason_live_mode_requires_explicit_model_name(tmp_path: Path) -> 
 
 def test_agent_reason_command_runs_mock_llm_loop(tmp_path: Path) -> None:
     config_path = create_sequence_agent_config(tmp_path)
-    prompt_pack = tmp_path / "prompt.yaml"
     candidates_path = tmp_path / "candidate_neighbors.jsonl"
     out_dir = tmp_path / "agent"
-    prompt_pack.write_text(
-        "name: falsification-loop\n"
-        "version: 1\n"
-        "system: You are a falsification-first agent.\n"
-        "developer_guidance: Test before concluding.\n"
-        "action_schema:\n"
-        "  allowed_actions:\n"
-        "    - request_context_summary\n"
-        "    - compare_example_annotations\n"
-        "    - finalize\n"
-        "tool_policy: Read-only evidence actions only.\n"
-        "output_contract: Return one JSON action object.\n",
-        encoding="utf-8",
-    )
     candidates_path.write_text(
         json.dumps(
             {
@@ -810,13 +807,11 @@ def test_agent_reason_command_runs_mock_llm_loop(tmp_path: Path) -> None:
             str(out_dir),
             "--llm-mode",
             "mock",
-            "--prompt-pack",
-            str(prompt_pack),
         ],
     )
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["llm_mode"] == "mock"
-    assert Path(payload["agent_trace"]).exists()
-    assert Path(payload["llm_calls"]).exists()
+    assert Path(payload["program_trace"]).exists()
+    assert Path(payload["tool_results"]).exists()

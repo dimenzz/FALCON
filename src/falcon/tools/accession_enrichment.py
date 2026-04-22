@@ -28,6 +28,14 @@ class AccessionEnricher:
 
     def enrich_candidate(self, representative_neighbor: dict[str, Any], *, cache_dir: str | Path | None = None) -> list[dict[str, Any]]:
         accessions = _collect_accessions(representative_neighbor)
+        return self.enrich_accessions(accessions, cache_dir=cache_dir)
+
+    def enrich_accessions(
+        self,
+        accessions: dict[str, list[str]],
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for source, accession_list in accessions.items():
             fetch = (self.fetchers or {}).get(source)

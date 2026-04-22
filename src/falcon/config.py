@@ -68,24 +68,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_bases": 20000,
     },
     "agent": {
-        "workflow": "deterministic",
+        "query_catalog": None,
         "max_candidates": 50,
         "max_examples": 5,
         "include_sequences": False,
         "flank_bp": 0,
-        "team": {
-            "engine": "orchestrated",
+        "notebook": {},
+        "program_planner": {
             "max_rounds": 2,
-            "prompt_dir": "prompts/agent/team",
+            "prompt_dir": "prompts/agent/reasoning",
             "schema_retries": 2,
-            "ledger_dir": "ledgers",
-            "tool_manifest": "configs/tool_manifest.yaml",
-            "resume": "skip_completed",
-            "tool_budget": {
-                "max_expensive_tools_per_candidate": None,
-            },
+        },
+        "cohort": {
+            "enabled": True,
         },
         "tools": {
+            "manifest": "configs/tool_manifest.yaml",
+            "max_expensive_tools_per_candidate": None,
             "interproscan": {
                 "policy": "on_demand",
             },
@@ -112,16 +111,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "max_results_per_source": 5,
         },
         "llm": {
-            "mode": "deterministic",
+            "mode": "mock",
             "provider": "openai",
             "model_name": None,
             "base_url": None,
             "api_key_env": "OPENAI_API_KEY",
             "temperature": 0.2,
             "max_tokens": 2000,
-            "prompt_pack": "prompts/agent/falsification_loop.yaml",
-            "max_iterations": 6,
             "replay_path": None,
+        },
+        "reporting": {
+            "ledger_dir": "ledgers",
         },
     },
     "runtime": {
@@ -145,9 +145,9 @@ CONFIG_RELATIVE_PATHS: tuple[tuple[str, ...], ...] = (
     ("tools", "mmseqs"),
     ("tools", "interproscan"),
     ("background", "output_dir"),
-    ("agent", "team", "prompt_dir"),
-    ("agent", "team", "tool_manifest"),
-    ("agent", "llm", "prompt_pack"),
+    ("agent", "query_catalog"),
+    ("agent", "program_planner", "prompt_dir"),
+    ("agent", "tools", "manifest"),
     ("agent", "llm", "replay_path"),
     ("runtime", "sandbox_dir"),
     ("runtime", "cache_dir"),
@@ -187,10 +187,12 @@ def load_config(
 ) -> dict[str, Any]:
     config = deepcopy(DEFAULT_CONFIG)
     yaml_config = load_yaml_config(config_path)
+    _raise_if_legacy_agent_keys(yaml_config, source=str(config_path) if config_path is not None else "config")
     if config_path is not None:
         yaml_config = resolve_config_paths(yaml_config, base_dir=_config_base_dir(Path(config_path)))
     config = deep_merge(config, yaml_config)
     if cli_overrides:
+        _raise_if_legacy_agent_keys(dict(cli_overrides), source="CLI overrides")
         config = deep_merge(config, cli_overrides)
     return config
 
@@ -229,3 +231,38 @@ def _config_base_dir(config_path: Path) -> Path:
         if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
             return candidate
     return start
+
+
+def _raise_if_legacy_agent_keys(payload: Mapping[str, Any], *, source: str) -> None:
+    legacy_hits: list[str] = []
+    hints: list[str] = []
+
+    agent = payload.get("agent")
+    if not isinstance(agent, Mapping):
+        return
+
+    if "workflow" in agent:
+        legacy_hits.append("agent.workflow")
+        hints.append("remove agent.workflow; falcon now has a single program-driven agent runtime")
+    if "team" in agent:
+        legacy_hits.append("agent.team")
+        hints.append(
+            "move agent.team.prompt_dir/schema_retries to agent.program_planner.*, "
+            "agent.team.tool_manifest to agent.tools.manifest, and agent.team.ledger_dir to agent.reporting.ledger_dir"
+        )
+    llm = agent.get("llm")
+    if isinstance(llm, Mapping):
+        if "prompt_pack" in llm:
+            legacy_hits.append("agent.llm.prompt_pack")
+            hints.append("remove agent.llm.prompt_pack; prompts now come from agent.program_planner.prompt_dir")
+        if "max_iterations" in llm:
+            legacy_hits.append("agent.llm.max_iterations")
+            hints.append("move agent.llm.max_iterations to agent.program_planner.max_rounds")
+        if str(llm.get("mode") or "") == "deterministic":
+            legacy_hits.append("agent.llm.mode=deterministic")
+            hints.append("set agent.llm.mode to mock, live, or replay; deterministic agent mode was removed")
+
+    if legacy_hits:
+        detail = ", ".join(legacy_hits)
+        migration = "; ".join(hints)
+        raise ValueError(f"{source} uses removed agent configuration keys: {detail}. Migration: {migration}")

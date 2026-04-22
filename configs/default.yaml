@@ -57,18 +57,23 @@ sequence:
   max_bases: 20000
 
 agent:
-  workflow: team
+  query_catalog:
   max_candidates: 50
   max_examples: 5
   include_sequences: false
   flank_bp: 0
-  team:
+  notebook: {}
+  program_planner:
     max_rounds: 2
-    prompt_dir: prompts/agent/team
+    prompt_dir: prompts/agent/reasoning
     schema_retries: 2
+  cohort:
+    enabled: true
+  reporting:
     ledger_dir: ledgers
-    tool_manifest: configs/tool_manifest.yaml
   tools:
+    manifest: configs/tool_manifest.yaml
+    max_expensive_tools_per_candidate:
     interproscan:
       policy: on_demand
     mmseqs:
@@ -94,12 +99,10 @@ agent:
     mode: live
     provider: openai
     model_name: gemma
-    base_url: http://10.11.65.65:8317/v1
+    base_url: http://10.16.0.119:8317/v1
     api_key_env: OPENAI_API_KEY
     temperature: 0.2
     max_tokens: 25600
-    prompt_pack: prompts/agent/falsification_loop.yaml
-    max_iterations: 6
     replay_path:
 
 runtime:

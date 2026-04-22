@@ -117,6 +117,11 @@ def _build_overrides(
     agent_max_examples: int | None = None,
     include_sequences: bool | None = None,
     flank_bp: int | None = None,
+    query_catalog: Path | None = None,
+    max_rounds: int | None = None,
+    prompt_dir: Path | None = None,
+    schema_retries: int | None = None,
+    ledger_dir: Path | None = None,
     agent_workflow: AgentWorkflow | None = None,
     max_team_rounds: int | None = None,
     team_prompt_dir: Path | None = None,
@@ -188,23 +193,22 @@ def _build_overrides(
                 "max_bases": sequence_max_bases,
             },
             "agent": {
-                "workflow": agent_workflow.value if agent_workflow is not None else None,
+                "query_catalog": _path_value(query_catalog),
                 "max_candidates": max_candidates,
                 "max_examples": agent_max_examples,
                 "include_sequences": include_sequences,
                 "flank_bp": flank_bp,
-                "team": {
-                    "max_rounds": max_team_rounds,
-                    "prompt_dir": _path_value(team_prompt_dir),
-                    "schema_retries": team_schema_retries,
-                    "ledger_dir": _path_value(team_ledger_dir),
-                    "tool_manifest": _path_value(tool_manifest),
-                    "resume": "skip_completed" if resume is True else ("off" if resume is False else None),
-                    "tool_budget": {
-                        "max_expensive_tools_per_candidate": max_expensive_tools_per_candidate,
-                    },
+                "program_planner": {
+                    "max_rounds": max_rounds,
+                    "prompt_dir": _path_value(prompt_dir),
+                    "schema_retries": schema_retries,
+                },
+                "reporting": {
+                    "ledger_dir": _path_value(ledger_dir),
                 },
                 "tools": {
+                    "manifest": _path_value(tool_manifest),
+                    "max_expensive_tools_per_candidate": max_expensive_tools_per_candidate,
                     "mmseqs": {
                         "max_hits": agent_mmseqs_max_hits,
                     },
@@ -223,8 +227,6 @@ def _build_overrides(
                     "api_key_env": llm_api_key_env,
                     "temperature": llm_temperature,
                     "max_tokens": llm_max_tokens,
-                    "prompt_pack": _path_value(prompt_pack),
-                    "max_iterations": max_iterations,
                     "replay_path": _path_value(replay_path),
                 },
             },
@@ -241,6 +243,19 @@ def _emit(payload: Any, output: OutputFormat = OutputFormat.JSON) -> None:
         typer.echo(yaml.safe_dump(payload, sort_keys=True))
     else:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _raise_if_legacy_agent_cli_options(**options: Any) -> None:
+    used = {name: value for name, value in options.items() if value is not None}
+    if not used:
+        return
+    flags = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(used))
+    raise ValueError(
+        f"Removed agent CLI options were used: {flags}. "
+        "Migration: remove --agent-workflow; replace --max-team-rounds with --max-rounds; "
+        "replace --team-prompt-dir with --prompt-dir; replace --team-schema-retries with --schema-retries; "
+        "replace --team-ledger-dir with --ledger-dir; remove --resume, --prompt-pack, and --max-iterations."
+    )
 
 
 @config_app.command("show")
@@ -278,13 +293,12 @@ def show_config(
     agent_max_examples: Annotated[int | None, typer.Option("--agent-max-examples")] = None,
     include_sequences: Annotated[bool | None, typer.Option("--include-sequences/--no-include-sequences")] = None,
     flank_bp: Annotated[int | None, typer.Option("--flank-bp")] = None,
-    agent_workflow: Annotated[AgentWorkflow | None, typer.Option("--agent-workflow")] = None,
-    max_team_rounds: Annotated[int | None, typer.Option("--max-team-rounds")] = None,
-    team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir")] = None,
-    team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries")] = None,
-    team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir")] = None,
+    query_catalog: Annotated[Path | None, typer.Option("--query-catalog")] = None,
+    max_rounds: Annotated[int | None, typer.Option("--max-rounds")] = None,
+    prompt_dir: Annotated[Path | None, typer.Option("--prompt-dir")] = None,
+    schema_retries: Annotated[int | None, typer.Option("--schema-retries")] = None,
+    ledger_dir: Annotated[Path | None, typer.Option("--ledger-dir")] = None,
     tool_manifest: Annotated[Path | None, typer.Option("--tool-manifest")] = None,
-    resume: Annotated[bool | None, typer.Option("--resume/--no-resume")] = None,
     max_expensive_tools_per_candidate: Annotated[
         int | None, typer.Option("--max-expensive-tools-per-candidate")
     ] = None,
@@ -298,13 +312,29 @@ def show_config(
     llm_api_key_env: Annotated[str | None, typer.Option("--api-key-env")] = None,
     llm_temperature: Annotated[float | None, typer.Option("--temperature")] = None,
     llm_max_tokens: Annotated[int | None, typer.Option("--max-tokens")] = None,
-    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
-    max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
     replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
+    agent_workflow: Annotated[AgentWorkflow | None, typer.Option("--agent-workflow", hidden=True)] = None,
+    max_team_rounds: Annotated[int | None, typer.Option("--max-team-rounds", hidden=True)] = None,
+    team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir", hidden=True)] = None,
+    team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries", hidden=True)] = None,
+    team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir", hidden=True)] = None,
+    resume: Annotated[bool | None, typer.Option("--resume/--no-resume", hidden=True)] = None,
+    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack", hidden=True)] = None,
+    max_iterations: Annotated[int | None, typer.Option("--max-iterations", hidden=True)] = None,
     progress: Annotated[bool | None, typer.Option("--progress/--quiet")] = None,
     heartbeat_seconds: Annotated[int | None, typer.Option("--heartbeat-seconds")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
+    _raise_if_legacy_agent_cli_options(
+        agent_workflow=agent_workflow,
+        max_team_rounds=max_team_rounds,
+        team_prompt_dir=team_prompt_dir,
+        team_schema_retries=team_schema_retries,
+        team_ledger_dir=team_ledger_dir,
+        resume=resume,
+        prompt_pack=prompt_pack,
+        max_iterations=max_iterations,
+    )
     config = load_config(
         config_path,
         _build_overrides(
@@ -340,13 +370,12 @@ def show_config(
             agent_max_examples=agent_max_examples,
             include_sequences=include_sequences,
             flank_bp=flank_bp,
-            agent_workflow=agent_workflow,
-            max_team_rounds=max_team_rounds,
-            team_prompt_dir=team_prompt_dir,
-            team_schema_retries=team_schema_retries,
-            team_ledger_dir=team_ledger_dir,
+            query_catalog=query_catalog,
+            max_rounds=max_rounds,
+            prompt_dir=prompt_dir,
+            schema_retries=schema_retries,
+            ledger_dir=ledger_dir,
             tool_manifest=tool_manifest,
-            resume=resume,
             max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
             dynamic_tools=dynamic_tools,
             dynamic_tool_timeout=dynamic_tool_timeout,
@@ -358,8 +387,6 @@ def show_config(
             llm_api_key_env=llm_api_key_env,
             llm_temperature=llm_temperature,
             llm_max_tokens=llm_max_tokens,
-            prompt_pack=prompt_pack,
-            max_iterations=max_iterations,
             replay_path=replay_path,
             progress=progress,
             heartbeat_seconds=heartbeat_seconds,
@@ -728,6 +755,7 @@ def sequence_dna(
 @agent_app.command("reason")
 def agent_reason(
     candidates: Annotated[Path, typer.Option("--candidates")],
+    query_catalog: Annotated[Path | None, typer.Option("--query-catalog")] = None,
     config_path: Annotated[Path | None, typer.Option("--config", "-c")] = None,
     proteins_db: Annotated[Path | None, typer.Option("--proteins-db")] = None,
     clusters_db: Annotated[Path | None, typer.Option("--clusters-db")] = None,
@@ -739,13 +767,11 @@ def agent_reason(
     include_sequences: Annotated[bool | None, typer.Option("--include-sequences/--no-include-sequences")] = None,
     flank_bp: Annotated[int | None, typer.Option("--flank-bp")] = None,
     sequence_max_bases: Annotated[int | None, typer.Option("--sequence-max-bases")] = None,
-    agent_workflow: Annotated[AgentWorkflow | None, typer.Option("--agent-workflow")] = None,
-    max_team_rounds: Annotated[int | None, typer.Option("--max-team-rounds")] = None,
-    team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir")] = None,
-    team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries")] = None,
-    team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir")] = None,
+    max_rounds: Annotated[int | None, typer.Option("--max-rounds")] = None,
+    prompt_dir: Annotated[Path | None, typer.Option("--prompt-dir")] = None,
+    schema_retries: Annotated[int | None, typer.Option("--schema-retries")] = None,
+    ledger_dir: Annotated[Path | None, typer.Option("--ledger-dir")] = None,
     tool_manifest: Annotated[Path | None, typer.Option("--tool-manifest")] = None,
-    resume: Annotated[bool | None, typer.Option("--resume/--no-resume")] = None,
     max_expensive_tools_per_candidate: Annotated[
         int | None, typer.Option("--max-expensive-tools-per-candidate")
     ] = None,
@@ -759,13 +785,29 @@ def agent_reason(
     llm_api_key_env: Annotated[str | None, typer.Option("--api-key-env")] = None,
     llm_temperature: Annotated[float | None, typer.Option("--temperature")] = None,
     llm_max_tokens: Annotated[int | None, typer.Option("--max-tokens")] = None,
-    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack")] = None,
-    max_iterations: Annotated[int | None, typer.Option("--max-iterations")] = None,
     replay_path: Annotated[Path | None, typer.Option("--replay-path")] = None,
+    agent_workflow: Annotated[AgentWorkflow | None, typer.Option("--agent-workflow", hidden=True)] = None,
+    max_team_rounds: Annotated[int | None, typer.Option("--max-team-rounds", hidden=True)] = None,
+    team_prompt_dir: Annotated[Path | None, typer.Option("--team-prompt-dir", hidden=True)] = None,
+    team_schema_retries: Annotated[int | None, typer.Option("--team-schema-retries", hidden=True)] = None,
+    team_ledger_dir: Annotated[Path | None, typer.Option("--team-ledger-dir", hidden=True)] = None,
+    resume: Annotated[bool | None, typer.Option("--resume/--no-resume", hidden=True)] = None,
+    prompt_pack: Annotated[Path | None, typer.Option("--prompt-pack", hidden=True)] = None,
+    max_iterations: Annotated[int | None, typer.Option("--max-iterations", hidden=True)] = None,
     progress: Annotated[bool | None, typer.Option("--progress/--quiet")] = None,
     heartbeat_seconds: Annotated[int | None, typer.Option("--heartbeat-seconds")] = None,
     output: Annotated[OutputFormat, typer.Option("--output")] = OutputFormat.JSON,
 ) -> None:
+    _raise_if_legacy_agent_cli_options(
+        agent_workflow=agent_workflow,
+        max_team_rounds=max_team_rounds,
+        team_prompt_dir=team_prompt_dir,
+        team_schema_retries=team_schema_retries,
+        team_ledger_dir=team_ledger_dir,
+        resume=resume,
+        prompt_pack=prompt_pack,
+        max_iterations=max_iterations,
+    )
     config = load_config(
         config_path,
         _build_overrides(
@@ -773,18 +815,17 @@ def agent_reason(
             clusters_db=clusters_db,
             genome_manifest=genome_manifest,
             protein_manifest=protein_manifest,
+            query_catalog=query_catalog,
             max_candidates=max_candidates,
             agent_max_examples=max_examples,
             include_sequences=include_sequences,
             flank_bp=flank_bp,
             sequence_max_bases=sequence_max_bases,
-            agent_workflow=agent_workflow,
-            max_team_rounds=max_team_rounds,
-            team_prompt_dir=team_prompt_dir,
-            team_schema_retries=team_schema_retries,
-            team_ledger_dir=team_ledger_dir,
+            max_rounds=max_rounds,
+            prompt_dir=prompt_dir,
+            schema_retries=schema_retries,
+            ledger_dir=ledger_dir,
             tool_manifest=tool_manifest,
-            resume=resume,
             max_expensive_tools_per_candidate=max_expensive_tools_per_candidate,
             dynamic_tools=dynamic_tools,
             dynamic_tool_timeout=dynamic_tool_timeout,
@@ -796,17 +837,22 @@ def agent_reason(
             llm_api_key_env=llm_api_key_env,
             llm_temperature=llm_temperature,
             llm_max_tokens=llm_max_tokens,
-            prompt_pack=prompt_pack,
-            max_iterations=max_iterations,
             replay_path=replay_path,
             progress=progress,
             heartbeat_seconds=heartbeat_seconds,
         ),
     )
+    if not config["agent"].get("query_catalog"):
+        typer.echo(
+            "agent.reason now requires a query catalog. Provide --query-catalog or set agent.query_catalog in YAML.",
+            err=True,
+        )
+        raise typer.Exit(1)
     output_dir = out_dir or _default_run_dir(config, "agent")
     try:
         summary = reason_candidates(
             candidates_path=candidates,
+            query_catalog_path=config["agent"]["query_catalog"],
             proteins_db=config["data"]["proteins_db"],
             clusters_db=config["data"]["clusters_db"],
             protein_manifest=config["data"]["protein_manifest"],
@@ -817,19 +863,13 @@ def agent_reason(
             include_sequences=bool(config["agent"]["include_sequences"]),
             flank_bp=int(config["agent"]["flank_bp"]),
             sequence_max_bases=int(config["sequence"]["max_bases"]),
-            workflow=str(config["agent"]["workflow"]),
             llm_mode=str(config["agent"]["llm"]["mode"]),
-            prompt_pack=config["agent"]["llm"]["prompt_pack"],
-            max_iterations=int(config["agent"]["llm"]["max_iterations"]),
-            max_team_rounds=int(config["agent"]["team"]["max_rounds"]),
-            team_prompt_dir=config["agent"]["team"].get("prompt_dir"),
-            team_schema_retries=int(config["agent"]["team"]["schema_retries"]),
-            team_ledger_dir=config["agent"]["team"]["ledger_dir"],
-            tool_manifest_path=config["agent"]["team"].get("tool_manifest"),
-            team_resume=str(config["agent"]["team"].get("resume", "skip_completed")),
-            max_expensive_tools_per_candidate=config["agent"]["team"]
-            .get("tool_budget", {})
-            .get("max_expensive_tools_per_candidate"),
+            max_rounds=int(config["agent"]["program_planner"]["max_rounds"]),
+            prompt_dir=config["agent"]["program_planner"].get("prompt_dir"),
+            schema_retries=int(config["agent"]["program_planner"]["schema_retries"]),
+            ledger_dir=config["agent"]["reporting"]["ledger_dir"],
+            tool_manifest_path=config["agent"]["tools"].get("manifest"),
+            max_expensive_tools_per_candidate=config["agent"]["tools"].get("max_expensive_tools_per_candidate"),
             dynamic_tools_enabled=bool(config["agent"].get("dynamic_tools", {}).get("enabled", False)),
             dynamic_tool_timeout=int(config["agent"].get("dynamic_tools", {}).get("timeout_seconds", 60)),
             dynamic_tool_allowed_imports=config["agent"].get("dynamic_tools", {}).get("allowed_imports", []),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from falcon.reporting.markdown import render_agent_report
 
 
-def test_render_agent_report_uses_supported_claim_working_hypotheses_and_next_evidence_plan_sections() -> None:
+def test_render_agent_report_uses_supported_claim_notebook_and_next_program_sections() -> None:
     report = render_agent_report(
         {
             "candidate": {
@@ -21,23 +21,27 @@ def test_render_agent_report_uses_supported_claim_working_hypotheses_and_next_ev
                     "label": "Csn2-family accessory protein in a Type II-A adaptation locus",
                     "evidence_refs": ["AUDIT:1"],
                 },
-                "working_hypotheses": [
-                    {
-                        "id": "H1",
-                        "mechanistic_label": "spacer-acquisition accessory factor",
-                        "status": "active",
-                    },
-                    {
-                        "id": "H2",
-                        "mechanistic_label": "non-canonical locus accessory factor",
-                        "status": "competing",
-                    },
+                "notebook_summary": [
+                    "Stable adaptation-side placement remains the main working interpretation.",
                 ],
-                "next_evidence_plan": [
+                "agenda_summary": [
+                    "identity_adjudication",
+                    "local_context_discrimination",
+                ],
+                "next_program_recommendations": [
                     "Inspect local sequence architecture for repeat structures near the locus.",
                     "Check occurrence-level loci for stable adaptation-side placement.",
                 ],
                 "evidence_refs": ["AUDIT:1"],
+            },
+            "seed_summary": {
+                "query_prior": {
+                    "function_description": "SpCas9 seed protein",
+                },
+                "target_consensus_annotation": {
+                    "product": "CRISPR-associated endonuclease Cas9",
+                    "gene_name": "cas9",
+                },
             },
             "sequence_evidence": {
                 "protein": {"available": True},
@@ -46,12 +50,39 @@ def test_render_agent_report_uses_supported_claim_working_hypotheses_and_next_ev
             "examples": [],
             "falsification_checklist": [],
             "uncertainties": [],
+            "ledger": {
+                "notebook": {
+                    "active_question": "What is the candidate's system role?",
+                    "failed_bridges": [],
+                    "escalation_signals": [],
+                    "recent_outcomes": [
+                        {"step_id": "S1", "program_type": "identity_adjudication", "status": "ok"},
+                    ],
+                },
+                "agendas": [
+                    {
+                        "main_question": "What is the candidate's system role?",
+                        "current_program": "identity_adjudication",
+                        "steps": [
+                            {"step_id": "S1", "program_type": "identity_adjudication", "goal": "Summarize annotations"}
+                        ],
+                    }
+                ],
+                "audited_claims": [
+                    {"step_id": "S1", "program_type": "identity_adjudication", "verdict": "support", "status": "ok"}
+                ],
+                "tool_runs": [
+                    {"tool": "summarize_annotations", "status": "ok"},
+                ],
+            },
         }
     )
 
     assert "## Supported Claim" in report
     assert "Csn2-family accessory protein in a Type II-A adaptation locus" in report
-    assert "## Working Mechanistic Hypotheses" in report
-    assert "spacer-acquisition accessory factor" in report
-    assert "## Next Evidence Collection Plan" in report
+    assert "## Research Notebook" in report
+    assert "Stable adaptation-side placement remains the main working interpretation." in report
+    assert "## Research Agenda" in report
+    assert "identity_adjudication" in report
+    assert "## Next Program Recommendation" in report
     assert "Inspect local sequence architecture for repeat structures near the locus." in report

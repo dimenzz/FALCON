@@ -5,10 +5,7 @@ from typing import Any, Iterable
 import json
 import re
 
-from falcon.agent.loop import run_llm_loop
-from falcon.agent.prompts import PromptPack, load_prompt_pack
 from falcon.agent.providers import LLMProvider, OpenAIChatProvider, ReplayLLMProvider, ScriptedLLMProvider
-from falcon.agent.team import run_team_loop
 from falcon.agent.team.events import JsonlEventLogger
 from falcon.context.extractor import extract_context
 from falcon.data.clusters import ClusterRepository
@@ -16,20 +13,19 @@ from falcon.data.proteins import ProteinNotFoundError, ProteinRepository
 from falcon.data.sequences import SequenceRepository
 from falcon.homology.search import write_jsonl
 from falcon.literature.search import DualLiteratureClient, LiteratureClient
+from falcon.reasoning.query_catalog import load_query_catalog
+from falcon.reasoning.runtime import run_research_runtime
+from falcon.reasoning.types import SeedSummary
 from falcon.reporting.markdown import render_agent_report
-from falcon.tools.agent_registry import (
-    EvidenceToolExecutor,
-    build_candidate_mmseqs_runner,
-    build_interproscan_runner,
-)
-from falcon.tools.dynamic import DynamicPythonToolRunner
 from falcon.tools.accession_enrichment import AccessionEnricher
-from falcon.tools.manifest import ToolManifest, load_tool_manifest
+from falcon.tools.agent_registry import EvidenceToolExecutor, build_candidate_mmseqs_runner, build_interproscan_runner
+from falcon.tools.manifest import load_tool_manifest
 
 
 def reason_candidates(
     *,
     candidates_path: Path | str,
+    query_catalog_path: Path | str,
     proteins_db: Path | str,
     clusters_db: Path | str,
     protein_manifest: Path | str,
@@ -40,20 +36,16 @@ def reason_candidates(
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
-    workflow: str = "deterministic",
-    llm_mode: str = "deterministic",
-    prompt_pack: Path | str | None = None,
-    max_iterations: int = 6,
-    max_team_rounds: int = 2,
-    team_prompt_dir: Path | str | None = None,
-    team_schema_retries: int = 2,
-    team_ledger_dir: Path | str = "ledgers",
+    llm_mode: str = "mock",
+    max_rounds: int = 2,
+    prompt_dir: Path | str | None = None,
+    schema_retries: int = 2,
+    ledger_dir: Path | str = "ledgers",
     tool_manifest_path: Path | str | None = None,
-    team_resume: str = "skip_completed",
     max_expensive_tools_per_candidate: int | None = None,
-    dynamic_tools_enabled: bool = False,
-    dynamic_tool_timeout: int = 60,
-    dynamic_tool_allowed_imports: list[str] | None = None,
+    dynamic_tools_enabled: bool = False,  # kept for config continuity; runtime ignores it for now
+    dynamic_tool_timeout: int = 60,  # kept for config continuity; runtime ignores it for now
+    dynamic_tool_allowed_imports: list[str] | None = None,  # kept for config continuity; runtime ignores it
     accession_cache_dir: Path | str = "cache",
     literature_max_results: int = 5,
     interproscan_policy: str = "on_demand",
@@ -79,51 +71,39 @@ def reason_candidates(
     llm_provider: LLMProvider | None = None,
     literature_client: LiteratureClient | None = None,
 ) -> dict[str, Any]:
+    del dynamic_tools_enabled, dynamic_tool_timeout, dynamic_tool_allowed_imports
+
     output_dir = Path(out_dir)
     reports_dir = output_dir / "reports"
-    ledgers_dir = output_dir / Path(team_ledger_dir)
+    ledgers_dir = output_dir / Path(ledger_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
     ledgers_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized_llm_mode = str(llm_mode)
+    if normalized_llm_mode == "deterministic":
+        raise ValueError(
+            "agent.llm.mode=deterministic was removed. Use mock, live, or replay with the program-driven runtime."
+        )
+
     event_logger = JsonlEventLogger(output_dir / Path(event_log), emit_to_stderr=bool(progress))
     tool_manifest = load_tool_manifest(tool_manifest_path, runner_ids=EvidenceToolExecutor.allowlisted_tools)
+    provider = llm_provider or _build_llm_provider(
+        mode=normalized_llm_mode,
+        model_name=llm_model_name,
+        base_url=llm_base_url,
+        api_key_env=llm_api_key_env,
+        temperature=llm_temperature,
+        max_tokens=llm_max_tokens,
+        replay_path=replay_path,
+    )
 
     candidates = _read_jsonl(candidates_path)
     if max_candidates is not None:
         candidates = candidates[: int(max_candidates)]
+    query_catalog = load_query_catalog(query_catalog_path)
+    candidate_cohort = [_candidate_cohort_row(record) for record in candidates]
 
-    normalized_workflow = str(workflow)
-    normalized_llm_mode = str(llm_mode)
-    if normalized_workflow not in {"deterministic", "single", "team"}:
-        raise ValueError(f"Unsupported agent.workflow: {normalized_workflow}")
-    if normalized_workflow == "deterministic" and normalized_llm_mode != "deterministic":
-        normalized_workflow = "single"
-    prompt_pack_obj: PromptPack | None = None
-    provider: LLMProvider | None = None
-    trace_records: list[dict[str, Any]] = []
-    call_records: list[dict[str, Any]] = []
-    team_trace_records: list[dict[str, Any]] = []
-    tool_plan_records: list[dict[str, Any]] = []
-    tool_result_records: list[dict[str, Any]] = []
-    literature_records: list[dict[str, Any]] = []
-    if normalized_workflow in {"single", "team"} and normalized_llm_mode == "deterministic":
-        raise ValueError(
-            f"agent.workflow={normalized_workflow} requires agent.llm.mode to be mock, live, or replay"
-        )
-    if normalized_llm_mode != "deterministic":
-        if normalized_workflow != "team" and prompt_pack is None:
-            raise ValueError("agent.llm.prompt_pack must be set when LLM mode is enabled")
-        if normalized_workflow != "team":
-            prompt_pack_obj = load_prompt_pack(prompt_pack)
-        provider = llm_provider or _build_llm_provider(
-            mode=normalized_llm_mode,
-            model_name=llm_model_name,
-            base_url=llm_base_url,
-            api_key_env=llm_api_key_env,
-            temperature=llm_temperature,
-            max_tokens=llm_max_tokens,
-            replay_path=replay_path,
-        )
     interproscan_runner = build_interproscan_runner(
         interproscan_path=interproscan_path,
         threads=interproscan_threads,
@@ -146,7 +126,7 @@ def reason_candidates(
         heartbeat_seconds=heartbeat_seconds,
     )
     tool_executor = EvidenceToolExecutor(
-        literature_client=literature_client or (DualLiteratureClient() if normalized_workflow == "team" else None),
+        literature_client=literature_client or DualLiteratureClient(),
         interproscan_runner=interproscan_runner,
         mmseqs_runner=candidate_mmseqs_runner,
         tool_manifest=tool_manifest,
@@ -155,57 +135,21 @@ def reason_candidates(
         literature_max_results=literature_max_results,
         interproscan_policy=interproscan_policy,
     )
-    dynamic_tool_runner = (
-        DynamicPythonToolRunner(
-            output_dir=output_dir / "dynamic_tools",
-            log_dir=log_dir,
-            timeout_seconds=dynamic_tool_timeout,
-            allowed_imports=set(dynamic_tool_allowed_imports) if dynamic_tool_allowed_imports is not None else None,
-        )
-        if dynamic_tools_enabled
-        else None
-    )
     accession_enricher = AccessionEnricher()
 
-    results = []
+    results: list[dict[str, Any]] = []
+    program_trace_records: list[dict[str, Any]] = []
+    tool_result_records: list[dict[str, Any]] = []
     with ProteinRepository(proteins_db) as proteins, ClusterRepository(clusters_db) as clusters, SequenceRepository(
         proteins_db=proteins_db,
         protein_manifest=protein_manifest,
         genome_manifest=genome_manifest,
     ) as sequences:
         for index, candidate in enumerate(candidates, start=1):
-            candidate_slug = _candidate_slug(candidate)
-            ledger_path = ledgers_dir / f"{index:04d}-{candidate_slug}.json"
-            if normalized_workflow == "team" and team_resume == "skip_completed" and _has_completed_ledger(ledger_path):
-                event_logger.emit(
-                    "candidate_skipped_existing_ledger",
-                    candidate_index=index,
-                    candidate_slug=candidate_slug,
-                    ledger_path=str(ledger_path),
-                )
-                results.append(
-                    {
-                        "candidate": _candidate_summary(candidate),
-                        "examples": [],
-                        "sequence_evidence": {"protein": {"available": False}, "dna": {"available": False}},
-                        "falsification_checklist": [],
-                        "reasoning": {
-                            "status": "skipped",
-                            "rationale": "Existing completed candidate ledger was reused.",
-                            "evidence": [],
-                        },
-                        "uncertainties": [],
-                        "ledger_path": str(ledger_path),
-                        "team_trace": {"workflow": "team", "rounds": 0, "ledger_blocked": False, "resumed": True},
-                        "tool_results": [],
-                        "literature_evidence": [],
-                        "report_path": str(reports_dir / f"{index:04d}-{candidate_slug}.md"),
-                    }
-                )
-                continue
             result = _reason_candidate(
                 candidate=candidate,
                 candidate_index=index,
+                query_catalog=query_catalog,
                 proteins=proteins,
                 clusters=clusters,
                 sequences=sequences,
@@ -217,65 +161,40 @@ def reason_candidates(
                 include_sequences=include_sequences,
                 flank_bp=flank_bp,
                 sequence_max_bases=sequence_max_bases,
-                workflow=normalized_workflow,
-                llm_mode=normalized_llm_mode,
-                prompt_pack=prompt_pack_obj,
                 llm_provider=provider,
-                max_iterations=max_iterations,
-                max_team_rounds=max_team_rounds,
-                team_prompt_dir=team_prompt_dir,
-                team_schema_retries=team_schema_retries,
-                tool_manifest=tool_manifest,
+                max_rounds=max_rounds,
+                prompt_dir=prompt_dir,
+                schema_retries=schema_retries,
                 event_logger=event_logger,
                 tool_executor=tool_executor,
-                dynamic_tools_enabled=dynamic_tools_enabled,
-                dynamic_tool_runner=dynamic_tool_runner,
                 accession_enricher=accession_enricher,
                 accession_cache_dir=str(accession_cache_dir),
+                candidate_cohort=candidate_cohort,
             )
-            trace_records.extend(result.pop("_agent_trace_records", []))
-            call_records.extend(result.pop("_llm_call_records", []))
-            team_trace_records.extend(result.pop("_team_trace_records", []))
-            tool_plan_records.extend(result.pop("_tool_plan_records", []))
+            program_trace_records.extend(result.pop("_program_trace_records", []))
             tool_result_records.extend(result.pop("_tool_result_records", []))
-            literature_records.extend(result.pop("_literature_records", []))
             results.append(result)
 
     results_path = output_dir / "agent_results.jsonl"
     write_jsonl(results, results_path)
-    trace_path = output_dir / "agent_trace.jsonl"
-    calls_path = output_dir / "llm_calls.jsonl"
-    if normalized_llm_mode != "deterministic":
-        write_jsonl(trace_records, trace_path)
-        write_jsonl(call_records, calls_path)
-    team_trace_path = output_dir / "agent_team_trace.jsonl"
-    tool_plan_path = output_dir / "tool_plan.jsonl"
+    program_trace_path = output_dir / "program_trace.jsonl"
     tool_results_path = output_dir / "tool_results.jsonl"
-    literature_path = output_dir / "literature_evidence.jsonl"
-    if normalized_workflow == "team":
-        write_jsonl(team_trace_records, team_trace_path)
-        write_jsonl(tool_plan_records, tool_plan_path)
-        write_jsonl(tool_result_records, tool_results_path)
-        write_jsonl(literature_records, literature_path)
+    write_jsonl(program_trace_records, program_trace_path)
+    write_jsonl(tool_result_records, tool_results_path)
+
     summary = {
         "candidates_input": str(candidates_path),
+        "query_catalog": str(query_catalog_path),
         "candidates_processed": len(results),
         "agent_results": str(results_path),
         "reports_dir": str(reports_dir),
         "status_counts": _status_counts(results),
         "llm_mode": normalized_llm_mode,
-        "workflow": normalized_workflow,
+        "program_trace": str(program_trace_path),
+        "tool_results": str(tool_results_path),
+        "candidate_ledgers": str(ledgers_dir),
+        "agent_events": str(output_dir / Path(event_log)),
     }
-    if normalized_llm_mode != "deterministic":
-        summary["agent_trace"] = str(trace_path)
-        summary["llm_calls"] = str(calls_path)
-    if normalized_workflow == "team":
-        summary["agent_team_trace"] = str(team_trace_path)
-        summary["tool_plan"] = str(tool_plan_path)
-        summary["tool_results"] = str(tool_results_path)
-        summary["literature_evidence"] = str(literature_path)
-        summary["candidate_ledgers"] = str(ledgers_dir)
-        summary["agent_events"] = str(output_dir / Path(event_log))
     (output_dir / "agent_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -287,6 +206,7 @@ def _reason_candidate(
     *,
     candidate: dict[str, Any],
     candidate_index: int,
+    query_catalog: dict[str, dict[str, str | None]],
     proteins: ProteinRepository,
     clusters: ClusterRepository,
     sequences: SequenceRepository,
@@ -298,24 +218,18 @@ def _reason_candidate(
     include_sequences: bool,
     flank_bp: int,
     sequence_max_bases: int,
-    workflow: str,
-    llm_mode: str,
-    prompt_pack: PromptPack | None,
-    llm_provider: LLMProvider | None,
-    max_iterations: int,
-    max_team_rounds: int,
-    team_prompt_dir: Path | str | None,
-    team_schema_retries: int,
-    tool_manifest: ToolManifest,
+    llm_provider: LLMProvider,
+    max_rounds: int,
+    prompt_dir: Path | str | None,
+    schema_retries: int,
     event_logger: JsonlEventLogger,
     tool_executor: EvidenceToolExecutor,
-    dynamic_tools_enabled: bool = False,
-    dynamic_tool_runner: DynamicPythonToolRunner | None = None,
-    accession_enricher: AccessionEnricher | None = None,
-    accession_cache_dir: str | None = None,
+    accession_enricher: AccessionEnricher,
+    accession_cache_dir: str | None,
+    candidate_cohort: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    examples = []
-    uncertainties = []
+    examples: list[dict[str, Any]] = []
+    uncertainties: list[str] = []
     for example in candidate.get("examples", [])[: int(max_examples)]:
         examples.append(
             _hydrate_example(
@@ -328,6 +242,11 @@ def _reason_candidate(
             )
         )
 
+    query_id = str(candidate.get("query_id") or "").strip()
+    query_record = query_catalog.get(query_id)
+    if query_record is None:
+        raise ValueError(f"query_catalog does not contain query_id={query_id!r} for candidate {_candidate_slug(candidate)}")
+
     representative_neighbor_id = _first_neighbor_id(examples)
     sequence_evidence = _sequence_evidence(
         protein_id=representative_neighbor_id,
@@ -337,77 +256,52 @@ def _reason_candidate(
         sequence_max_bases=sequence_max_bases,
         uncertainties=uncertainties,
     )
+    seed_summary = SeedSummary.from_query_and_examples(query_record=query_record, examples=examples).to_dict()
+    candidate_neighbor_summary = _candidate_neighbor_summary(examples, representative_neighbor_id)
     checklist = _falsification_checklist(candidate, examples, sequence_evidence)
-    reasoning = _rule_based_reasoning(candidate, examples, checklist)
+
+    runtime_result = run_research_runtime(
+        candidate_index=candidate_index,
+        candidate_slug=_candidate_slug(candidate),
+        runtime_inputs={
+            "candidate_summary": _candidate_summary(candidate),
+            "seed_summary": seed_summary,
+            "candidate_neighbor_summary": candidate_neighbor_summary,
+            "occurrence_bundle": {
+                "examples": examples,
+                "sequence_evidence": sequence_evidence,
+                "candidate_cohort": candidate_cohort,
+            },
+        },
+        provider=llm_provider,
+        tool_executor=tool_executor,
+        max_rounds=max_rounds,
+        prompt_dir=prompt_dir,
+        schema_retries=schema_retries,
+        accession_enricher=accession_enricher,
+        accession_cache_dir=accession_cache_dir,
+        event_logger=event_logger,
+    )
+
     result: dict[str, Any] = {
         "candidate": _candidate_summary(candidate),
+        "seed_summary": seed_summary,
+        "candidate_neighbor_summary": candidate_neighbor_summary,
         "examples": examples,
         "sequence_evidence": sequence_evidence,
         "falsification_checklist": checklist,
-        "reasoning": reasoning,
-        "uncertainties": uncertainties,
+        "reasoning": runtime_result.reasoning,
+        "uncertainties": uncertainties + _ledger_uncertainties(runtime_result.ledger),
+        "ledger": runtime_result.ledger,
     }
-    if workflow == "team":
-        if llm_provider is None:
-            raise ValueError("LLM provider is required for team workflow")
-        if sequence_evidence["protein"].get("available") and "sequence" not in sequence_evidence["protein"]:
-            sequence_evidence = _sequence_evidence(
-                protein_id=representative_neighbor_id,
-                sequences=sequences,
-                include_sequences=True,
-                flank_bp=flank_bp,
-                sequence_max_bases=sequence_max_bases,
-                uncertainties=uncertainties,
-            )
-            result["sequence_evidence"] = sequence_evidence
-        team_result = run_team_loop(
-            candidate_index=candidate_index,
-            candidate_slug=_candidate_slug(candidate),
-            evidence=result,
-            provider=llm_provider,
-            tool_executor=tool_executor,
-            max_rounds=max_team_rounds,
-            prompt_dir=team_prompt_dir,
-            schema_retries=team_schema_retries,
-            dynamic_tools_enabled=dynamic_tools_enabled,
-            dynamic_tool_runner=dynamic_tool_runner,
-            accession_enricher=accession_enricher,
-            accession_cache_dir=accession_cache_dir,
-        )
-        result["reasoning"] = team_result.reasoning
-        result["team_trace"] = team_result.team_trace
-        result["tool_results"] = team_result.tool_results
-        result["literature_evidence"] = team_result.literature_evidence
-        result["uncertainties"].extend(team_result.uncertainties)
-        result["ledger"] = team_result.ledger
-        ledger_path = ledgers_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.json"
-        ledger_path.write_text(json.dumps(team_result.ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        result["ledger_path"] = str(ledger_path)
-        result["_team_trace_records"] = team_result.role_calls
-        result["_tool_plan_records"] = team_result.tool_plan
-        result["_tool_result_records"] = team_result.tool_results
-        result["_literature_records"] = team_result.literature_evidence
-    elif llm_mode != "deterministic":
-        if prompt_pack is None or llm_provider is None:
-            raise ValueError("LLM prompt pack and provider are required when LLM mode is enabled")
-        loop_result = run_llm_loop(
-            candidate_index=candidate_index,
-            candidate_slug=_candidate_slug(candidate),
-            evidence=result,
-            provider=llm_provider,
-            prompt_pack=prompt_pack,
-            max_iterations=max_iterations,
-            mode=llm_mode,
-        )
-        result["reasoning"] = loop_result.reasoning
-        result["llm_trace"] = loop_result.trace_summary
-        result["uncertainties"].extend(loop_result.uncertainties)
-        result["_agent_trace_records"] = loop_result.trace_records
-        result["_llm_call_records"] = loop_result.call_records
+    ledger_path = ledgers_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.json"
+    ledger_path.write_text(json.dumps(runtime_result.ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result["ledger_path"] = str(ledger_path)
+    result["_program_trace_records"] = runtime_result.role_calls
+    result["_tool_result_records"] = runtime_result.ledger.get("tool_runs", [])
     report_path = reports_dir / f"{candidate_index:04d}-{_candidate_slug(candidate)}.md"
     result["report_path"] = str(report_path)
     report_path.write_text(render_agent_report(result), encoding="utf-8")
-    result.pop("ledger", None)
     return result
 
 
@@ -508,6 +402,30 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     return {key: candidate.get(key) for key in keys if key in candidate}
 
 
+def _candidate_neighbor_summary(examples: list[dict[str, Any]], representative_neighbor_id: str | None) -> dict[str, Any]:
+    fields = ("product", "gene_name", "pfam", "interpro", "kegg", "cog_id", "cog_category")
+    summary: dict[str, Any] = {"protein_id": representative_neighbor_id}
+    for field in fields:
+        for example in examples:
+            neighbor = example.get("neighbor_protein") or {}
+            value = neighbor.get(field)
+            if value:
+                summary[field] = value
+                break
+        else:
+            summary[field] = None
+    return summary
+
+
+def _candidate_cohort_row(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "query_id": candidate.get("query_id"),
+        "cluster_30": candidate.get("cluster_30"),
+        "presence_contexts": candidate.get("presence_contexts"),
+        "protein_length": candidate.get("protein_length"),
+    }
+
+
 def _falsification_checklist(
     candidate: dict[str, Any],
     examples: list[dict[str, Any]],
@@ -532,30 +450,6 @@ def _falsification_checklist(
     ]
 
 
-def _rule_based_reasoning(
-    candidate: dict[str, Any],
-    examples: list[dict[str, Any]],
-    checklist: list[dict[str, str]],
-) -> dict[str, str]:
-    q_value = float(candidate.get("q_value", 1.0))
-    fold_enrichment = float(candidate.get("fold_enrichment", 0.0))
-    presence_contexts = int(candidate.get("presence_contexts", 0))
-    has_failure = any(item["status"] == "fail" for item in checklist)
-    if has_failure:
-        status = "conflicting"
-        rationale = "At least one core falsification check failed."
-    elif q_value <= 0.05 and fold_enrichment >= 2.0 and presence_contexts >= 3 and examples:
-        status = "supported"
-        rationale = "Co-localization is statistically strong and backed by occurrence examples."
-    elif examples:
-        status = "weak"
-        rationale = "Occurrence examples exist, but statistical support is below the MVP support threshold."
-    else:
-        status = "insufficient"
-        rationale = "No occurrence-level examples were available for deterministic reasoning."
-    return {"status": status, "rationale": rationale}
-
-
 def _first_neighbor_id(examples: Iterable[dict[str, Any]]) -> str | None:
     for example in examples:
         neighbor_id = example.get("neighbor_protein_id")
@@ -574,17 +468,6 @@ def _read_jsonl(path: Path | str) -> list[dict[str, Any]]:
     return records
 
 
-def _has_completed_ledger(path: Path) -> bool:
-    if not path.exists():
-        return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    final = payload.get("final") if isinstance(payload, dict) else None
-    return isinstance(final, dict) and bool(final.get("status"))
-
-
 def _status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for result in results:
@@ -596,6 +479,16 @@ def _status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
 def _candidate_slug(candidate: dict[str, Any]) -> str:
     raw = f"{candidate.get('query_id', 'query')}-{candidate.get('cluster_30', 'cluster')}"
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-") or "candidate"
+
+
+def _ledger_uncertainties(ledger: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    notebook = ledger.get("notebook") or {}
+    for bridge in notebook.get("failed_bridges", []):
+        reason = str(bridge.get("reason") or "").strip()
+        if reason:
+            notes.append(reason)
+    return notes
 
 
 def _build_llm_provider(

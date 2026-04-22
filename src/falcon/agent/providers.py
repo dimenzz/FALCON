@@ -26,14 +26,34 @@ class ScriptedLLMProvider:
 
     def __init__(self, responses: list[dict[str, Any] | str] | None = None) -> None:
         self._responses = responses or [
-            {"action": "request_context_summary", "reason": "Inspect occurrence-level context before concluding."},
-            {"action": "compare_example_annotations", "reason": "Check whether annotations contradict novelty."},
             {
-                "action": "finalize",
-                "status": "insufficient",
-                "rationale": "Scripted mock mode does not infer biological novelty; use live mode for model reasoning.",
-                "evidence": [],
-                "uncertainties": ["Mock provider only validates the loop and evidence plumbing."],
+                "main_question": "What is the candidate's conservative system role?",
+                "current_program": "identity_adjudication",
+                "steps": [
+                    {
+                        "step_id": "S1",
+                        "program_type": "identity_adjudication",
+                        "goal": "Summarize current annotations before any mechanistic escalation.",
+                        "why_now": "The mock runtime should validate basic reasoning plumbing first.",
+                        "inputs_required": ["seed_summary", "candidate_neighbor_summary", "occurrence_bundle"],
+                        "expected_artifacts": ["annotation_summary"],
+                        "branch_conditions": ["If a concrete bridge clue appears, switch to semantic_bridge_resolution."],
+                        "stop_conditions": ["A conservative annotation summary is available."],
+                        "focus_terms": [],
+                    }
+                ],
+            },
+            {
+                "status": "weak",
+                "rationale": "Scripted mock mode keeps the supported claim conservative and validates runtime plumbing.",
+                "supported_claim": {
+                    "label": "conservative candidate-level role assignment",
+                    "evidence_refs": [],
+                },
+                "notebook_summary": ["Mock provider validates the notebook/program-planner runtime."],
+                "agenda_summary": ["identity_adjudication"],
+                "next_program_recommendations": ["semantic_bridge_resolution if a concrete accession clue appears"],
+                "evidence_refs": [],
             },
         ]
         self._index = 0

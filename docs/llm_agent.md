@@ -1,141 +1,81 @@
-# LLM Agent Loop
+# LLM Agent Runtime
 
-FALCON's LLM agent mode evaluates one candidate neighbor protein at a time. It does not run broad autonomous tools. The single-agent loop only exposes read-only evidence already collected by the pipeline:
+FALCON now exposes one LLM-backed reasoning runtime. It does not support the historical deterministic / single / team workflow split.
 
-- co-localization statistics for the candidate neighbor cluster,
-- occurrence-level genomic context examples,
-- SQLite annotations and cluster mappings,
-- protein and DNA sequence availability summaries.
+## Runtime shape
+
+For each candidate neighbor protein, FALCON:
+
+1. builds deterministic evidence inputs
+2. initializes a `ResearchNotebook`
+3. asks the `ProgramPlanner` for a short agenda
+4. executes one program step through allowlisted tools
+5. updates the notebook and audit ledger
+6. optionally escalates to a lightweight cohort investigator
+7. asks the synthesizer for a conservative supported claim and next-step recommendations
 
 ## Configuration
 
-LLM settings live under `agent.llm` in YAML and can be overridden from the CLI.
+Relevant YAML keys:
 
 ```yaml
 agent:
-  workflow: deterministic
-  team:
-    engine: orchestrated
+  query_catalog: runs/example-search/seeds.jsonl
+  program_planner:
     max_rounds: 2
-    prompt_dir: prompts/agent/team
+    prompt_dir: prompts/agent/reasoning
     schema_retries: 2
-    ledger_dir: ledgers
-    tool_manifest: configs/tool_manifest.yaml
-    resume: skip_completed
-    tool_budget:
-      max_expensive_tools_per_candidate:
   tools:
+    manifest: configs/tool_manifest.yaml
+    max_expensive_tools_per_candidate:
     interproscan:
       policy: on_demand
     mmseqs:
       max_hits: 25
-  dynamic_tools:
-    enabled: false
-    timeout_seconds: 60
-    allowed_imports: [Bio, collections, csv, itertools, json, math, re, statistics]
   literature:
     sources: [europe_pmc, pubmed]
     max_results_per_source: 5
   llm:
-    mode: deterministic
-    provider: openai
+    mode: live
     model_name:
     base_url:
     api_key_env: OPENAI_API_KEY
     temperature: 0.2
     max_tokens: 2000
-    prompt_pack: prompts/agent/falsification_loop.yaml
-    max_iterations: 6
     replay_path:
-runtime:
-  progress: true
-  heartbeat_seconds: 30
-  event_log: agent_events.jsonl
+  reporting:
+    ledger_dir: ledgers
 ```
 
-`mode` can be:
+`agent.query_catalog` is required. FALCON no longer infers seed metadata from an upstream run directory.
 
-- `deterministic`: rule-based MVP reasoning, no LLM calls.
-- `mock`: scripted provider for tests and local trace checks.
-- `live`: OpenAI-compatible Chat Completions through the OpenAI Python SDK.
-- `replay`: replays responses from a previous `llm_calls.jsonl`.
+`agent.llm.mode` may be:
 
-Live mode requires `model_name`; FALCON does not provide a guessed model default. Custom endpoints use `base_url`.
+- `mock`
+- `live`
+- `replay`
 
-`workflow` can be:
+`deterministic` mode was removed. Live mode still requires an explicit `model_name`.
 
-- `deterministic`: rule-based MVP reasoning.
-- `single`: the original single-LLM action loop.
-- `team`: candidate-level multi-agent reasoning.
+## Prompts
 
-For backward compatibility, setting `agent.llm.mode` to `mock`, `live`, or `replay` while leaving `agent.workflow: deterministic` runs the single-agent loop and records `workflow: single` in the summary.
+Prompts live under `prompts/agent/reasoning/`.
 
-## Prompt Packs
+Current prompt files:
 
-Prompt packs are YAML files under `prompts/agent/`. A prompt pack must define:
+- `program_planner.yaml`
+- `synthesizer.yaml`
 
-- `name`
-- `version`
-- `system`
-- `developer_guidance`
-- `action_schema.allowed_actions`
-- `tool_policy`
-- `output_contract`
+There is no longer a prompt-pack action loop.
 
-The default pack is `prompts/agent/falsification_loop.yaml`.
+## Audit artifacts
 
-Team prompt packs live under `agent.team.prompt_dir`, which defaults to `prompts/agent/team/`. They split the workflow into independent roles:
+The runtime writes:
 
-- `literature_scout`
-- `hypothesis_generator`
-- `evidence_needs`
-- `tool_planner`
-- `dynamic_tool_designer`
-- `dynamic_tool_reviewer`
-- `evidence_auditor`
-- `hypothesis_reviser`
-- `synthesizer`
+- `program_trace.jsonl`
+- `tool_results.jsonl`
+- `agent_events.jsonl`
+- `ledgers/*.json`
+- `reports/*.md`
 
-Each role prompt is a YAML file named `<role>.yaml` with `role`, `system`, `developer_guidance`, and `output_contract` fields. Prompts may also define `context_requirements` and `few_shot_antipatterns`; the loader injects those sections into the role instruction. This keeps scientific instructions editable without changing orchestration code.
-
-## Team Workflow
-
-The team workflow uses a bounded ledger loop:
-
-```text
-family_selector -> literature_scout -> hypothesis_generator -> evidence_needs -> tool_planner
-  -> plan validation -> tool execution -> optional dynamic tool fallback
-  -> evidence_auditor -> hypothesis_reviser -> synthesizer
-```
-
-Every candidate gets a structured JSON ledger with an `evidence_graph`. Family naming is selected deterministically from accession enrichment before literature grounding. Literature grounding is mandatory and happens before hypothesis generation. The deterministic three-item checklist is kept as `deterministic_checks`; hypothesis-specific falsification tests are generated by the LLM for each hypothesis. Role calls receive a context pack rather than a raw ledger dump. The context pack includes a `context_workbench` with a manifest-derived tool catalog, data contracts, artifact index, role-specific context views, and the dynamic-tool contract.
-
-The `tool_planner` must read `context_workbench.tool_catalog` instead of relying on tool names embedded in prompts. Tool requests are validated before execution against manifest capabilities. A rejected tool plan is recorded as a planning failure, not interpreted as biological falsification.
-
-The default `configs/tool_manifest.yaml` includes literature search, context inspection, candidate annotation summaries, full-context feature queries, a generic local sequence architecture probe, candidate motif checks, on-demand InterProScan, and candidate MMseqs search. The manifest states what each tool can and cannot answer. For example, an MMseqs hit table is candidate homology evidence, but it is not residue-level motif evidence; a candidate annotation summary cannot answer whether a separate Cas2 protein exists in the full genomic context; the local sequence architecture probe reports repeat-structure facts, not biological labels.
-
-InterProScan is skipped when existing PFAM/InterPro annotations are sufficient under the default `on_demand` policy. Expensive tools can also be deferred by `agent.team.tool_budget.max_expensive_tools_per_candidate`.
-Tool failures, skips, and deferrals are recorded as observations so the evidence auditor and synthesizer can treat missing evidence explicitly instead of aborting the whole candidate.
-Role outputs are validated with pydantic schemas. Invalid JSON triggers retries up to `agent.team.schema_retries`; repeated failures mark the candidate ledger as blocked. Invalid or mismatched tool ids are handled by plan validation and recorded in the ledger.
-
-## Dynamic Tools
-
-Dynamic tools are disabled by default. When `agent.dynamic_tools.enabled` is true, FALCON may ask `dynamic_tool_designer` to write a small Python tool for a local evidence need that fixed manifest tools cannot answer. `dynamic_tool_reviewer` must approve the script before execution.
-
-Dynamic scripts must define `run(input_payload: dict) -> dict`. FALCON runs the script through an outer Python subprocess, captures stdout/stderr logs, and records script/input/output artifacts and a SHA-256 hash. Scripts may import only configured safe packages such as Biopython and common standard-library modules. Scripts may not launch nested subprocesses, open network connections, or write arbitrary files.
-
-## Artifacts
-
-LLM runs write:
-
-- `agent_results.jsonl`: final per-candidate evidence and verdicts.
-- `agent_trace.jsonl`: action and observation trace for each loop iteration.
-- `llm_calls.jsonl`: replayable model requests and responses.
-- `agent_team_trace.jsonl`: role-call trace for team workflow.
-- `agent_events.jsonl`: candidate, role, tool, and external command lifecycle events.
-- `tool_plan.jsonl`: requested allowlisted tools and rationale.
-- `tool_results.jsonl`: deterministic tool observations.
-- `dynamic_tools/`: generated dynamic scripts, input bundles, output JSON, logs, and hashes when dynamic tools are enabled.
-- `literature_evidence.jsonl`: normalized literature hits used by the team workflow.
-- `ledgers/*.json`: per-candidate memory ledger containing literature, hypotheses, hypothesis-specific falsification tests, tool observations, audit findings, revisions, final synthesis, and an `evidence_graph`.
-- `reports/*.md`: human-readable candidate reports.
+The evidence graph inside each ledger is an audit substrate for executed facts. It is not the reasoning backbone.
